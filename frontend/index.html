@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CommCopilot</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Scenario Selection -->
+        <div id="scenario-screen">
+            <h1>CommCopilot</h1>
+            <p>Select a conversation scenario</p>
+            <div id="scenario-cards"></div>
+        </div>
+
+        <!-- Active Session -->
+        <div id="session-screen" style="display:none;">
+            <div id="status-bar">
+                <span id="scenario-label"></span>
+                <span id="status-indicator">Listening...</span>
+                <button id="end-btn">End Session</button>
+            </div>
+            <div id="phrase-container"></div>
+            <div id="selected-phrase" style="display:none;"></div>
+        </div>
+
+        <!-- Recap -->
+        <div id="recap-screen" style="display:none;">
+            <h2>Session Recap</h2>
+            <div id="recap-content"></div>
+            <button id="new-session-btn">New Session</button>
+        </div>
+
+        <!-- Error -->
+        <div id="error-bar" style="display:none;"></div>
+    </div>
+    <script src="/static/app.js"></script>
+</body>
+</html>
