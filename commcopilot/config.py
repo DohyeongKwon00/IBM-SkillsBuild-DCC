@@ -25,8 +25,8 @@ USE_SUPERVISOR = os.getenv("USE_SUPERVISOR", "true").lower() == "true"
 HESITATION_PAUSE_MS = 1500        # Browser silence detection threshold (ms)
 HESITATION_COOLDOWN_S = 5         # Debounce: ignore hesitations for this long after one triggers
 PHRASE_AUTO_DISMISS_S = 5         # Phrase cards auto-dismiss
-LATENCY_BUDGET_S = 4.0            # Target max pipeline latency
-ORCHESTRATE_TIMEOUT_S = 6.0       # Timeout for Orchestrate REST calls
+LATENCY_BUDGET_S = 4.0            # Target max pipeline latency (ideal)
+ORCHESTRATE_TIMEOUT_S = 15.0      # SupervisorAgent chains 3 collaborators internally — needs headroom
 MIN_SPEECH_CONFIDENCE = 0.6       # Minimum Web Speech API confidence to accept transcript
 TRANSCRIPT_WINDOW = 10            # Number of transcript segments to keep in sliding window
 SESSION_TIMEOUT_S = 1800          # Evict sessions idle longer than this (30 min)

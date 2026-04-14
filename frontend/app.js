@@ -42,6 +42,10 @@ const phraseContainer = document.getElementById('phrase-container');
 const selectedPhraseEl = document.getElementById('selected-phrase');
 const recapContent = document.getElementById('recap-content');
 const errorBar = document.getElementById('error-bar');
+const inlineRecapEl = document.getElementById('inline-recap');
+const transcriptFinalEl = document.getElementById('transcript-final');
+const transcriptInterimEl = document.getElementById('transcript-interim');
+const logPanelEl = document.getElementById('log-panel');
 
 // --- Init ---
 async function init() {
@@ -104,6 +108,9 @@ function connectWebSocket(scenarioKey) {
             awaiting_phrases = false;
             showPhrases(msg.phrases);
 
+        } else if (msg.type === 'log') {
+            appendLog(msg);
+
         } else if (msg.type === 'recap') {
             showRecap(msg.recap, msg.phrases_used);
         }
@@ -162,6 +169,7 @@ function startSpeechRecognition() {
     recognition.lang = 'en-US';
 
     recognition.onresult = (event) => {
+        let interim = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
             const result = event.results[i];
             const transcript = result[0].transcript;
@@ -169,16 +177,20 @@ function startSpeechRecognition() {
 
             if (result.isFinal) {
                 // Filter low-confidence results
-                if (confidence < MIN_SPEECH_CONFIDENCE && confidence > 0) return;
+                if (confidence < MIN_SPEECH_CONFIDENCE && confidence > 0) continue;
 
                 sendMessage({ type: 'transcript', text: transcript });
+                appendFinalTranscript(transcript);
 
                 // Filler word detection
                 if (_fillerRe.test(transcript)) {
                     triggerHesitation('filler');
                 }
+            } else {
+                interim += transcript;
             }
         }
+        transcriptInterimEl.textContent = interim;
     };
 
     recognition.onend = () => {
@@ -274,16 +286,28 @@ function selectPhrase(phrase) {
 // --- Recap ---
 function showRecap(recap, phrasesUsed) {
     isSessionActive = false;
-    sessionScreen.style.display = 'none';
-    recapScreen.style.display = 'block';
+
+    // Keep the session screen visible so the log panel stays on screen.
+    // Show an inline recap banner and stop listening; recap screen is no longer used.
+    statusIndicator.textContent = 'Ended';
+    statusIndicator.className = '';
+    phraseContainer.innerHTML = '';
+    if (dismissTimer) clearTimeout(dismissTimer);
 
     let html = `<p>${recap}</p>`;
     if (phrasesUsed && phrasesUsed.length > 0) {
-        html += '<h3>Phrases you used:</h3><ul>';
+        html += '<h4>Phrases you used:</h4><ul>';
         phrasesUsed.forEach(p => { html += `<li>${p}</li>`; });
         html += '</ul>';
     }
-    recapContent.innerHTML = html;
+    html += '<button id="restart-btn">New Session</button>';
+    inlineRecapEl.innerHTML = html;
+    inlineRecapEl.style.display = 'block';
+    document.getElementById('restart-btn').onclick = () => location.reload();
+
+    // Disable the End Session button now that we've ended.
+    const endBtn = document.getElementById('end-btn');
+    if (endBtn) endBtn.disabled = true;
 
     cleanup();
 }
@@ -297,6 +321,59 @@ document.getElementById('new-session-btn').onclick = () => {
     recapScreen.style.display = 'none';
     scenarioScreen.style.display = 'block';
 };
+
+// --- Live Transcript ---
+function appendFinalTranscript(text) {
+    const span = document.createElement('span');
+    span.textContent = text.trim() + ' ';
+    transcriptFinalEl.appendChild(span);
+    const parent = document.getElementById('live-transcript');
+    parent.scrollTop = parent.scrollHeight;
+}
+
+// --- Pipeline Log ---
+function appendLog(msg) {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry';
+
+    const now = new Date();
+    const time = now.toTimeString().slice(0, 8);
+    const stage = msg.stage || 'event';
+    const status = msg.status || '';
+    const detail = msg.detail || '';
+
+    const header = document.createElement('div');
+    header.className = 'log-header';
+    header.innerHTML =
+        `<span class="log-time">${time}</span>` +
+        `<span class="log-stage ${stage}">[${stage}]</span>` +
+        `<span class="log-status">${status}</span>` +
+        `<span class="log-detail"></span>`;
+    header.querySelector('.log-detail').textContent = detail;
+    entry.appendChild(header);
+
+    const addBlock = (label, value) => {
+        if (value === undefined || value === null || value === '') return;
+        const block = document.createElement('div');
+        block.className = 'log-block';
+        const lab = document.createElement('span');
+        lab.className = 'log-label';
+        lab.textContent = label + ': ';
+        const body = document.createElement('span');
+        body.className = 'log-body';
+        body.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+        block.appendChild(lab);
+        block.appendChild(body);
+        entry.appendChild(block);
+    };
+
+    addBlock('prompt', msg.prompt);
+    addBlock('output', msg.output);
+    addBlock('parsed', msg.context || msg.phrases);
+
+    logPanelEl.appendChild(entry);
+    logPanelEl.scrollTop = logPanelEl.scrollHeight;
+}
 
 // --- Error ---
 function showError(msg) {

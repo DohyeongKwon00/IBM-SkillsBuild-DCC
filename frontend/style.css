@@ -19,3 +19,33 @@ button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; 
 #recap-content { background: white; padding: 20px; border-radius: 12px; margin-bottom: 16px; line-height: 1.6; }
 #new-session-btn { background: #007aff; color: white; width: 100%; }
 #error-bar { background: #ff3b30; color: white; padding: 12px; border-radius: 8px; margin-top: 12px; }
+#inline-recap { margin-top: 16px; background: #eef6ff; border: 1px solid #c7dcff; border-radius: 12px; padding: 14px 16px; }
+#inline-recap p { color: #333; margin-bottom: 8px; }
+#inline-recap h4 { font-size: 13px; margin: 8px 0 4px; }
+#inline-recap ul { margin-left: 18px; margin-bottom: 10px; }
+#inline-recap #restart-btn { background: #007aff; color: white; }
+
+#app { max-width: 720px; }
+.panel { margin-top: 20px; background: white; border: 1px solid #e5e5e5; border-radius: 12px; padding: 14px 16px; }
+.panel h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 10px; }
+
+#live-transcript { min-height: 48px; font-size: 15px; line-height: 1.5; max-height: 180px; overflow-y: auto; }
+#transcript-final { color: #222; }
+#transcript-interim { color: #999; font-style: italic; }
+
+#log-panel { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; max-height: 360px; overflow-y: auto; background: #0f1115; color: #d4d4d4; border-radius: 8px; padding: 10px; }
+.log-entry { padding: 6px 0; border-bottom: 1px solid #1f2330; }
+.log-entry:last-child { border-bottom: none; }
+.log-header { white-space: pre-wrap; word-break: break-word; }
+.log-block { margin: 4px 0 0 18px; padding: 4px 8px; background: #151823; border-left: 2px solid #2a3040; border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+.log-label { color: #7dd3fc; font-weight: 600; }
+.log-body { color: #e5e7eb; }
+.log-time { color: #6a7280; margin-right: 6px; }
+.log-stage { font-weight: 600; margin-right: 6px; }
+.log-stage.hesitation    { color: #f59e0b; }
+.log-stage.context_agent { color: #60a5fa; }
+.log-stage.phrase_agent  { color: #34d399; }
+.log-stage.safety_agent  { color: #f472b6; }
+.log-stage.supervisor    { color: #a78bfa; }
+.log-status { color: #e5e7eb; margin-right: 6px; }
+.log-detail { color: #9ca3af; }

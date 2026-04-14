@@ -123,6 +123,15 @@ async def websocket_endpoint(ws: WebSocket):
                 state.awaiting_phrases = True
 
                 await send({"type": "thinking"})
+                await send({
+                    "type": "log",
+                    "stage": "hesitation",
+                    "status": "detected",
+                    "detail": f"trigger={trigger}",
+                })
+
+                async def emit_log(event: dict) -> None:
+                    await send({"type": "log", **event})
 
                 try:
                     phrases = await get_phrases(
@@ -130,6 +139,7 @@ async def websocket_endpoint(ws: WebSocket):
                         transcript_buffer=list(state.transcript_buffer),
                         phrases_used=list(state.phrases_used),
                         use_supervisor=USE_SUPERVISOR,
+                        on_event=emit_log,
                     )
                 except Exception as e:
                     logger.error("get_phrases failed: %s", e)

@@ -10,8 +10,8 @@ Two call paths:
 
 USE_SUPERVISOR env flag (config.py) picks which path server/app.py uses.
 
-API endpoint format:
-  POST {ORCHESTRATE_URL}/api/v1/orchestrate/{agent_id}/chat/completions
+API endpoint format (IBM Cloud SaaS):
+  POST {ORCHESTRATE_URL}/v1/orchestrate/{agent_id}/chat/completions
   Response: OpenAI-compatible {"choices": [{"message": {"content": "..."}}]}
 """
 
@@ -19,9 +19,11 @@ import json
 import logging
 import re
 import time
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
+
+EventCallback = Optional[Callable[[dict], Awaitable[None]]]
 
 from commcopilot.config import (
     CONTEXT_AGENT_ID,
@@ -36,6 +38,16 @@ from commcopilot.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+async def _emit(on_event: EventCallback, event: dict) -> None:
+    if on_event is None:
+        return
+    try:
+        await on_event(event)
+    except Exception as e:
+        logger.debug("on_event callback failed: %s", e)
+
 
 _FENCE_RE = re.compile(r"^```[a-z]*\n?", re.MULTILINE)
 
@@ -95,7 +107,7 @@ async def _chat(agent_id: str, prompt: str, warmup: bool = False) -> str:
     if not agent_id:
         raise OrchestrateError("agent_id is empty — run 'orchestrate agents list' and set env vars")
 
-    url = f"{ORCHESTRATE_URL}/api/v1/orchestrate/{agent_id}/chat/completions"
+    url = f"{ORCHESTRATE_URL}/v1/orchestrate/{agent_id}/chat/completions"
     token = await _get_iam_token()
     payload = {
         "messages": [{"role": "user", "content": prompt}],
@@ -136,6 +148,7 @@ async def call_supervisor_agent(
     transcript_buffer: list[str],
     phrases_used: list[str],
     warmup: bool = False,
+    on_event: EventCallback = None,
 ) -> list[str]:
     """Call SupervisorAgent. It chains ContextAgent->PhraseAgent->SafetyAgent via collaborators.
 
@@ -158,15 +171,25 @@ async def call_supervisor_agent(
         "Return ONLY a JSON array of 2-3 phrase strings. No markdown fences, no explanation."
     )
 
+    await _emit(on_event, {
+        "stage": "supervisor",
+        "status": "calling",
+        "detail": "SupervisorAgent chaining Context→Phrase→Safety",
+        "prompt": prompt,
+    })
     raw = await _chat(SUPERVISOR_AGENT_ID, prompt, warmup=warmup)
 
     if warmup:
         return []
 
+    await _emit(on_event, {"stage": "supervisor", "status": "responded", "output": raw})
+
     try:
         phrases = json.loads(_strip_fences(raw))
         if isinstance(phrases, list) and phrases:
-            return [str(p) for p in phrases[:3]]
+            result = [str(p) for p in phrases[:3]]
+            await _emit(on_event, {"stage": "supervisor", "status": "parsed", "phrases": result})
+            return result
         raise OrchestrateParseError(f"Unexpected shape: {raw!r}")
     except json.JSONDecodeError as e:
         raise OrchestrateParseError(f"JSON parse failed: {raw!r}") from e
@@ -176,6 +199,7 @@ async def call_pipeline_sequential(
     scenario: str,
     transcript_buffer: list[str],
     phrases_used: list[str],
+    on_event: EventCallback = None,
 ) -> list[str]:
     """Fallback: 3 sequential calls to individual agents (USE_SUPERVISOR=false)."""
     context = _scenario_context(scenario)
@@ -187,11 +211,19 @@ async def call_pipeline_sequential(
         f"Transcript:\n{transcript}\n\n"
         'Return ONLY JSON: {"role": "...", "tone": "...", "intent": "..."}. No fences.'
     )
+    await _emit(on_event, {
+        "stage": "context_agent",
+        "status": "calling",
+        "detail": "Inferring role, tone, intent",
+        "prompt": ctx_prompt,
+    })
     ctx_raw = await _chat(CONTEXT_AGENT_ID, ctx_prompt)
+    await _emit(on_event, {"stage": "context_agent", "status": "responded", "output": ctx_raw})
     try:
         ctx = json.loads(_strip_fences(ctx_raw))
     except Exception:
         ctx = {"role": "professor", "tone": "formal", "intent": "continue conversation"}
+    await _emit(on_event, {"stage": "context_agent", "status": "parsed", "context": ctx})
 
     # Step 2: PhraseAgent
     used_hint = (
@@ -205,13 +237,22 @@ async def call_pipeline_sequential(
         "Generate 3 short phrases (under 15 words each) the student can say next. "
         "Return ONLY a JSON array. No fences."
     )
+    await _emit(on_event, {
+        "stage": "phrase_agent",
+        "status": "calling",
+        "detail": "Generating candidate phrases",
+        "prompt": phrase_prompt,
+    })
     phrase_raw = await _chat(PHRASE_AGENT_ID, phrase_prompt)
+    await _emit(on_event, {"stage": "phrase_agent", "status": "responded", "output": phrase_raw})
     try:
         phrases: list[str] = json.loads(_strip_fences(phrase_raw))
         if not isinstance(phrases, list):
             raise ValueError
     except Exception:
+        await _emit(on_event, {"stage": "phrase_agent", "status": "parse_failed", "detail": "using fallback"})
         return list(FALLBACK_PHRASES)
+    await _emit(on_event, {"stage": "phrase_agent", "status": "parsed", "phrases": phrases})
 
     # Step 3: SafetyAgent
     safety_prompt = (
@@ -219,14 +260,24 @@ async def call_pipeline_sequential(
         "Return ONLY a JSON array of safe phrases. "
         f"If fewer than 2 are safe, return {json.dumps(list(FALLBACK_PHRASES))}. No fences."
     )
+    await _emit(on_event, {
+        "stage": "safety_agent",
+        "status": "calling",
+        "detail": "Verifying phrases are safe",
+        "prompt": safety_prompt,
+    })
     safety_raw = await _chat(SAFETY_AGENT_ID, safety_prompt)
+    await _emit(on_event, {"stage": "safety_agent", "status": "responded", "output": safety_raw})
     try:
         safe: list[str] = json.loads(_strip_fences(safety_raw))
         if isinstance(safe, list) and safe:
-            return [str(p) for p in safe[:3]]
+            result = [str(p) for p in safe[:3]]
+            await _emit(on_event, {"stage": "safety_agent", "status": "parsed", "phrases": result})
+            return result
     except Exception:
         pass
 
+    await _emit(on_event, {"stage": "safety_agent", "status": "fallback", "detail": "using unchecked phrases"})
     return phrases[:3] if phrases else list(FALLBACK_PHRASES)
 
 
@@ -235,13 +286,18 @@ async def get_phrases(
     transcript_buffer: list[str],
     phrases_used: list[str],
     use_supervisor: bool = True,
+    on_event: EventCallback = None,
 ) -> list[str]:
     """Entry point called by server/app.py. Always returns a non-empty list."""
     try:
         if use_supervisor:
-            return await call_supervisor_agent(scenario, transcript_buffer, phrases_used)
+            return await call_supervisor_agent(
+                scenario, transcript_buffer, phrases_used, on_event=on_event
+            )
         else:
-            return await call_pipeline_sequential(scenario, transcript_buffer, phrases_used)
+            return await call_pipeline_sequential(
+                scenario, transcript_buffer, phrases_used, on_event=on_event
+            )
     except OrchestrateTimeoutError:
         logger.warning("Orchestrate timed out, returning fallback phrases")
     except OrchestrateParseError as e:
