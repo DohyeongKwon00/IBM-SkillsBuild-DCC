@@ -22,7 +22,7 @@ SAFETY_AGENT_ID = os.getenv("SAFETY_AGENT_ID", "")
 USE_SUPERVISOR = os.getenv("USE_SUPERVISOR", "true").lower() == "true"
 
 # Thresholds
-HESITATION_PAUSE_MS = 1500        # Browser silence detection threshold (ms)
+HESITATION_PAUSE_MS = 3000        # Browser silence detection threshold (ms)
 HESITATION_COOLDOWN_S = 5         # Debounce: ignore hesitations for this long after one triggers
 PHRASE_AUTO_DISMISS_S = 5         # Phrase cards auto-dismiss
 LATENCY_BUDGET_S = 4.0            # Target max pipeline latency (ideal)

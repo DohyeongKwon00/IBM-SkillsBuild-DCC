@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from commcopilot.config import (
     FALLBACK_PHRASES,
     HESITATION_COOLDOWN_S,
+    HESITATION_PAUSE_MS,
     MIN_SPEECH_CONFIDENCE,
     PHRASE_AUTO_DISMISS_S,
     SCENARIOS,
@@ -93,6 +94,7 @@ async def websocket_endpoint(ws: WebSocket):
             "phrase_auto_dismiss_s": PHRASE_AUTO_DISMISS_S,
             "min_speech_confidence": MIN_SPEECH_CONFIDENCE,
             "hesitation_cooldown_s": HESITATION_COOLDOWN_S,
+            "hesitation_pause_ms": HESITATION_PAUSE_MS,
         })
 
         while True:

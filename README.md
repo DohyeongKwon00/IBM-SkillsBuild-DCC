@@ -10,21 +10,47 @@ Built as part of the **IBM SkillsBuild AI Experiential Learning Lab**.
 Microphone → Web Speech API → Hesitation Detection → Orchestrate Agents → Phrase Suggestions
 ```
 
-1. **Speech-to-Text** — Chrome's Web Speech API transcribes the live conversation in the browser
-2. **Hesitation Detection** — Browser detects silence pauses (≥4000ms) and filler words (um, uh, like…)
+1. **Speech-to-Text** — Chrome's Web Speech API transcribes the live conversation in the browser (both interim and final results)
+2. **Hesitation Detection** — All client-side in `frontend/app.js`. Three independent triggers, all gated by a 5s cooldown + an "awaiting server" flag so they don't fire on top of each other:
+   - **`pause`** — Web Audio API `AnalyserNode` computes RMS every animation frame; if no voiced frame for ≥3000ms, the browser emits `hesitation`.
+   - **`filler`** — Two regexes run against both each new interim suffix (only the newly-arrived characters) and the final transcript:
+     - phrase fillers: `like, you know, I mean, sort of, kind of, kinda, sorta, well, so, actually, basically, literally, you see, right`
+     - elongated fillers: `\b(u+h+m*|u+m+|e+r+m*|a+h+|h+m+|e+m+)\b` — matches `um`, `ummm`, `uh`, `uhhh`, `er`, `errr`, `hm`, `hmm`, `erm`, `uhm` and their drawn-out variants
+   - **`drawl`** (prosody) — RMS stays above the voiced threshold continuously for ≥1200ms **while** STT interim/final text hasn't advanced for ≥700ms. Catches held sounds like "uhhhhh…" where energy is present but no phonemes are being produced. Implemented directly in the existing `checkSilence` RAF loop using `voicedSince` and `lastTranscriptChangeTime` state.
 3. **Context Inference** — ContextAgent infers speaker role, tone, and student intent from the transcript
 4. **Phrase Generation** — PhraseAgent generates 3 short, natural phrases the student can say next
 5. **Safety Filter** — SafetyAgent screens phrases for appropriateness before display
 
-The pipeline is orchestrated via **IBM watsonx Orchestrate** with a SupervisorAgent that chains ContextAgent → PhraseAgent → SafetyAgent internally via collaborators.
+The pipeline is orchestrated via **IBM watsonx Orchestrate**. Two routing modes are supported:
+
+- `USE_SUPERVISOR=true` — SupervisorAgent chains ContextAgent → PhraseAgent → SafetyAgent internally via collaborators (single call).
+- `USE_SUPERVISOR=false` — FastAPI calls the three agents sequentially. Use this mode to see every per-agent prompt and response in the Pipeline Log panel.
+
+## UI Features
+
+The session screen surfaces everything happening end-to-end so the agent flow is transparent:
+
+- **Phrase Cards** — clickable suggested phrases, auto-dismiss after 5s.
+- **Live Transcript** — STT results render as you speak: finalized text in black, interim (not-yet-final) text in italic grey.
+- **Pipeline Log** — a dark log panel that streams each pipeline step in real time, timestamped and color-coded per stage:
+  - `[hesitation]` detected with its trigger tag (`pause` / `filler` / `drawl`)
+  - `[context_agent]` calling → responded → parsed (with the raw prompt and full model output)
+  - `[phrase_agent]` calling → responded → parsed
+  - `[safety_agent]` calling → responded → parsed
+  - `[supervisor]` (in supervisor mode — a single calling/responded/parsed trio)
+- **Inline recap** — pressing *End Session* does **not** navigate away. The recap (hesitation count + phrases used) appears as an inline banner while the Live Transcript and Pipeline Log stay on screen so you can review the full run afterwards. *New Session* reloads the page.
+
+The log events are sent over the same WebSocket as phrase suggestions — see `on_event` in `commcopilot/orchestrate.py` and the `emit_log` closure in `server/app.py`.
 
 ## Tech Stack
 
-- **Backend**: FastAPI + WebSocket
-- **Agent Orchestration**: IBM watsonx Orchestrate ADK
+- **Backend**: FastAPI + WebSocket (`httpx` async client)
+- **Agent Orchestration**: IBM watsonx Orchestrate — IBM Cloud SaaS REST API
+  (`POST {ORCHESTRATE_URL}/v1/orchestrate/{agent_id}/chat/completions`, OpenAI-compatible payload)
+- **Auth**: IBM Cloud IAM — API key exchanged for a Bearer access token (cached 1h)
 - **LLM**: IBM watsonx (via Orchestrate agents)
 - **Speech-to-Text**: Browser Web Speech API (Chrome)
-- **Frontend**: HTML/CSS/JS
+- **Frontend**: HTML/CSS/JS (no framework)
 
 ## Project Structure
 
@@ -211,7 +237,11 @@ Open [http://localhost:8000](http://localhost:8000) in **Chrome**.
 pytest
 ```
 
-21 unit tests covering session state, Orchestrate client, and WebSocket behavior. All IBM service calls are mocked.
+Unit tests cover session state, the Orchestrate client, and WebSocket behavior. All IBM service calls are mocked.
+
+> Note: the REST endpoint used by `commcopilot/orchestrate.py` is the IBM Cloud SaaS path
+> `/v1/orchestrate/{agent_id}/chat/completions` (no `/api` prefix). The ADK next-gen spec uses
+> `/api/v1/orchestrate/...` — do not confuse the two.
 
 ---
 

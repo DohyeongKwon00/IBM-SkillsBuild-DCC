@@ -5,19 +5,34 @@
  */
 
 // Defaults — overridden by session_ready message from server
-let PAUSE_THRESHOLD_MS = 1500;
+let PAUSE_THRESHOLD_MS = 3000;
 let AUTO_DISMISS_MS = 5000;
 let HESITATION_COOLDOWN_S = 5;
 let MIN_SPEECH_CONFIDENCE = 0.6;
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000];
 
-// Filler word detection (client-side — matches server FILLER_WORDS list)
-const FILLER_WORDS = ['um', 'uh', 'er', 'ah', 'like', 'you know'];
-const _fillerRe = new RegExp(
-    '\\b(' + FILLER_WORDS.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b',
+// Filler word detection (client-side, two passes):
+//
+//   1. PHRASE_FILLERS   — multi-word / context fillers that need literal match
+//                         ("you know", "I mean", "sort of", ...)
+//   2. ELONGATED_FILLER — single regex that catches both the base forms AND
+//                         their drawn-out variants ("uhhh", "ummmm", "errrr").
+//
+// Both run on each new interim suffix AND on the final transcript.
+const PHRASE_FILLERS = [
+    'like', 'you know', 'i mean', 'sort of', 'kind of', 'kinda', 'sorta',
+    'well', 'so', 'actually', 'basically', 'literally', 'you see', 'right',
+];
+const _phraseFillerRe = new RegExp(
+    '\\b(' + PHRASE_FILLERS.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b',
     'i'
 );
+// Catches: um, ummm, uh, uhhh, er, errr, ah, ahh, hm, hmm, em, erm, uhm.
+const _elongatedFillerRe = /\b(u+h+m*|u+m+|e+r+m*|a+h+|h+m+|e+m+)\b/i;
+function _isFiller(text) {
+    return _phraseFillerRe.test(text) || _elongatedFillerRe.test(text);
+}
 
 let ws = null;
 let audioContext = null;
@@ -30,6 +45,12 @@ let dismissTimer = null;
 let isSessionActive = false;
 let awaiting_phrases = false;  // client-side gate: suppress while server is thinking
 let hesitationCooldownActive = false;
+
+// Prosody trackers — used by silence/drawl detection in startSilenceDetection()
+let voicedSince = null;              // ms timestamp when current voiced run began
+let lastTranscriptChangeTime = 0;    // last time interim/final STT advanced
+const DRAWL_MIN_VOICED_MS = 1200;    // hold voiced energy this long...
+const DRAWL_STT_STALL_MS = 700;      // ...while STT text is stuck, to count as a drawl
 
 // --- Screens ---
 const scenarioScreen = document.getElementById('scenario-screen');
@@ -96,6 +117,7 @@ function connectWebSocket(scenarioKey) {
             if (msg.phrase_auto_dismiss_s) AUTO_DISMISS_MS = msg.phrase_auto_dismiss_s * 1000;
             if (msg.min_speech_confidence) MIN_SPEECH_CONFIDENCE = msg.min_speech_confidence;
             if (msg.hesitation_cooldown_s) HESITATION_COOLDOWN_S = msg.hesitation_cooldown_s;
+            if (msg.hesitation_pause_ms) PAUSE_THRESHOLD_MS = msg.hesitation_pause_ms;
             statusIndicator.textContent = 'Listening...';
             startSpeechRecognition();
             startSilenceDetection();
@@ -168,6 +190,10 @@ function startSpeechRecognition() {
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
+    // Per-interim-result cursor: how many chars of each live result we've
+    // already scanned for filler words, so we only test newly-arrived text.
+    const interimScanned = {};
+
     recognition.onresult = (event) => {
         let interim = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -176,18 +202,34 @@ function startSpeechRecognition() {
             const confidence = result[0].confidence;
 
             if (result.isFinal) {
+                delete interimScanned[i];
+
                 // Filter low-confidence results
                 if (confidence < MIN_SPEECH_CONFIDENCE && confidence > 0) continue;
 
                 sendMessage({ type: 'transcript', text: transcript });
                 appendFinalTranscript(transcript);
+                lastTranscriptChangeTime = Date.now();
 
-                // Filler word detection
-                if (_fillerRe.test(transcript)) {
+                // Safety net: if the filler only showed up on final, still catch it.
+                if (_isFiller(transcript)) {
                     triggerHesitation('filler');
                 }
             } else {
                 interim += transcript;
+
+                // Scan only the newly-appended suffix (with a small backward
+                // window so fillers split across chunks still match).
+                const prev = interimScanned[i] || 0;
+                const start = Math.max(0, prev - 10);
+                const fresh = transcript.slice(start);
+                if (fresh && _isFiller(fresh)) {
+                    triggerHesitation('filler');
+                }
+                interimScanned[i] = transcript.length;
+
+                // Prosody: transcript just advanced, so speech is actively producing words.
+                lastTranscriptChangeTime = Date.now();
             }
         }
         transcriptInterimEl.textContent = interim;
@@ -221,6 +263,8 @@ function startSilenceDetection() {
 
     const dataArray = new Uint8Array(analyser.fftSize);
     let lastSoundTime = Date.now();
+    lastTranscriptChangeTime = Date.now();
+    voicedSince = null;
 
     function checkSilence() {
         if (!isSessionActive) return;
@@ -234,8 +278,24 @@ function startSilenceDetection() {
         }
         const rms = Math.sqrt(sum / dataArray.length);
 
-        if (rms > 0.01) {
-            lastSoundTime = Date.now();
+        const now = Date.now();
+
+        if (rms > 0.02) {
+            // Voiced frame
+            if (voicedSince === null) voicedSince = now;
+            lastSoundTime = now;
+
+            // Drawl: voiced continuously for long enough, but STT isn't producing new words.
+            // Classic "uhhhh..." where energy holds but no phonemes advance.
+            const voicedDuration = now - voicedSince;
+            const sttStall = now - lastTranscriptChangeTime;
+            if (voicedDuration >= DRAWL_MIN_VOICED_MS && sttStall >= DRAWL_STT_STALL_MS) {
+                triggerHesitation('drawl');
+                voicedSince = now;  // reset so it doesn't retrigger in the same run
+            }
+        } else if (rms < 0.01) {
+            // Silent frame — end the voiced run
+            voicedSince = null;
         }
 
         const silenceDuration = Date.now() - lastSoundTime;
