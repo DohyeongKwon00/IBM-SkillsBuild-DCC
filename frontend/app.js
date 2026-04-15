@@ -1,63 +1,29 @@
 /**
- * CommCopilot Frontend
- * Handles: WebSocket connection, Web Speech API STT, silence detection,
- * filler word detection, phrase display.
+ * CommCopilot Frontend (listener mode)
+ *
+ * In listener mode the browser no longer decides when to trigger the pipeline.
+ * It just transcribes speech via the Web Speech API and streams each final
+ * transcript chunk to the server. The server forwards chunks to ContextAgent,
+ * which decides on its own whether to stay silent or return phrase suggestions.
  */
 
 // Defaults — overridden by session_ready message from server
-let PAUSE_THRESHOLD_MS = 3000;
 let AUTO_DISMISS_MS = 5000;
-let HESITATION_COOLDOWN_S = 5;
 let MIN_SPEECH_CONFIDENCE = 0.6;
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000];
 
-// Filler word detection (client-side, two passes):
-//
-//   1. PHRASE_FILLERS   — multi-word / context fillers that need literal match
-//                         ("you know", "I mean", "sort of", ...)
-//   2. ELONGATED_FILLER — single regex that catches both the base forms AND
-//                         their drawn-out variants ("uhhh", "ummmm", "errrr").
-//
-// Both run on each new interim suffix AND on the final transcript.
-const PHRASE_FILLERS = [
-    'like', 'you know', 'i mean', 'sort of', 'kind of', 'kinda', 'sorta',
-    'well', 'so', 'actually', 'basically', 'literally', 'you see', 'right',
-];
-const _phraseFillerRe = new RegExp(
-    '\\b(' + PHRASE_FILLERS.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b',
-    'i'
-);
-// Catches: um, ummm, uh, uhhh, er, errr, ah, ahh, hm, hmm, em, erm, uhm.
-const _elongatedFillerRe = /\b(u+h+m*|u+m+|e+r+m*|a+h+|h+m+|e+m+)\b/i;
-function _isFiller(text) {
-    return _phraseFillerRe.test(text) || _elongatedFillerRe.test(text);
-}
-
 let ws = null;
-let audioContext = null;
-let analyser = null;
 let mediaStream = null;
 let recognition = null;
-let silenceTimer = null;
 let reconnectAttempt = 0;
 let dismissTimer = null;
 let isSessionActive = false;
-let awaiting_phrases = false;  // client-side gate: suppress while server is thinking
-let hesitationCooldownActive = false;
-
-// Prosody trackers — used by silence/drawl detection in startSilenceDetection()
-let voicedSince = null;              // ms timestamp when current voiced run began
-let lastTranscriptChangeTime = 0;    // last time interim/final STT advanced
-const DRAWL_MIN_VOICED_MS = 1200;    // hold voiced energy this long...
-const DRAWL_STT_STALL_MS = 700;      // ...while STT text is stuck, to count as a drawl
 
 // --- Screens ---
-const scenarioScreen = document.getElementById('scenario-screen');
+const startScreen = document.getElementById('start-screen');
 const sessionScreen = document.getElementById('session-screen');
-const recapScreen = document.getElementById('recap-screen');
-const scenarioCards = document.getElementById('scenario-cards');
-const scenarioLabel = document.getElementById('scenario-label');
+const startBtn = document.getElementById('start-btn');
 const statusIndicator = document.getElementById('status-indicator');
 const phraseContainer = document.getElementById('phrase-container');
 const selectedPhraseEl = document.getElementById('selected-phrase');
@@ -68,21 +34,8 @@ const transcriptFinalEl = document.getElementById('transcript-final');
 const transcriptInterimEl = document.getElementById('transcript-interim');
 const logPanelEl = document.getElementById('log-panel');
 
-// --- Init ---
-async function init() {
-    const resp = await fetch('/api/scenarios');
-    const scenarios = await resp.json();
-    for (const [key, val] of Object.entries(scenarios)) {
-        const card = document.createElement('button');
-        card.className = 'scenario-card';
-        card.textContent = val.name;
-        card.onclick = () => startSession(key, val.name);
-        scenarioCards.appendChild(card);
-    }
-}
-
 // --- Session ---
-async function startSession(scenarioKey, scenarioName) {
+async function startSession() {
     try {
         mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
@@ -90,44 +43,42 @@ async function startSession(scenarioKey, scenarioName) {
         return;
     }
 
-    scenarioScreen.style.display = 'none';
+    startScreen.style.display = 'none';
     sessionScreen.style.display = 'block';
-    scenarioLabel.textContent = scenarioName;
     isSessionActive = true;
 
-    connectWebSocket(scenarioKey);
+    connectWebSocket();
 }
 
 // --- WebSocket ---
-function connectWebSocket(scenarioKey) {
+function connectWebSocket() {
     const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
     ws.onopen = () => {
         reconnectAttempt = 0;
         hideError();
-        ws.send(JSON.stringify({ type: 'scenario', scenario: scenarioKey }));
+        ws.send(JSON.stringify({ type: 'start' }));
     };
 
     ws.onmessage = (event) => {
         const msg = JSON.parse(event.data);
 
         if (msg.type === 'session_ready') {
-            // Apply server-side config overrides
             if (msg.phrase_auto_dismiss_s) AUTO_DISMISS_MS = msg.phrase_auto_dismiss_s * 1000;
             if (msg.min_speech_confidence) MIN_SPEECH_CONFIDENCE = msg.min_speech_confidence;
-            if (msg.hesitation_cooldown_s) HESITATION_COOLDOWN_S = msg.hesitation_cooldown_s;
-            if (msg.hesitation_pause_ms) PAUSE_THRESHOLD_MS = msg.hesitation_pause_ms;
             statusIndicator.textContent = 'Listening...';
             startSpeechRecognition();
-            startSilenceDetection();
 
         } else if (msg.type === 'thinking') {
-            statusIndicator.textContent = 'Thinking...';
+            statusIndicator.textContent = 'Listener thinking...';
             statusIndicator.className = 'processing';
 
+        } else if (msg.type === 'idle') {
+            statusIndicator.textContent = 'Listening...';
+            statusIndicator.className = '';
+
         } else if (msg.type === 'phrases') {
-            awaiting_phrases = false;
             showPhrases(msg.phrases);
 
         } else if (msg.type === 'log') {
@@ -145,7 +96,7 @@ function connectWebSocket(scenarioKey) {
             showError(`Connection lost. Reconnecting in ${delay / 1000}s...`);
             setTimeout(() => {
                 reconnectAttempt++;
-                connectWebSocket(scenarioKey);
+                connectWebSocket();
             }, delay);
         } else {
             showError('Connection lost. Please refresh the page.');
@@ -161,23 +112,7 @@ function sendMessage(msg) {
     }
 }
 
-function triggerHesitation(trigger) {
-    if (awaiting_phrases || hesitationCooldownActive) return;
-
-    awaiting_phrases = true;
-    hesitationCooldownActive = true;
-
-    statusIndicator.textContent = 'Processing...';
-    statusIndicator.className = 'processing';
-    sendMessage({ type: 'hesitation', trigger });
-
-    // Cooldown: block further hesitation triggers for HESITATION_COOLDOWN_S seconds
-    setTimeout(() => {
-        hesitationCooldownActive = false;
-    }, HESITATION_COOLDOWN_S * 1000);
-}
-
-// --- Web Speech API ---
+// --- Web Speech API (STT only — no triggers) ---
 function startSpeechRecognition() {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -190,10 +125,6 @@ function startSpeechRecognition() {
     recognition.interimResults = true;
     recognition.lang = 'en-US';
 
-    // Per-interim-result cursor: how many chars of each live result we've
-    // already scanned for filler words, so we only test newly-arrived text.
-    const interimScanned = {};
-
     recognition.onresult = (event) => {
         let interim = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -202,41 +133,17 @@ function startSpeechRecognition() {
             const confidence = result[0].confidence;
 
             if (result.isFinal) {
-                delete interimScanned[i];
-
-                // Filter low-confidence results
                 if (confidence < MIN_SPEECH_CONFIDENCE && confidence > 0) continue;
-
                 sendMessage({ type: 'transcript', text: transcript });
                 appendFinalTranscript(transcript);
-                lastTranscriptChangeTime = Date.now();
-
-                // Safety net: if the filler only showed up on final, still catch it.
-                if (_isFiller(transcript)) {
-                    triggerHesitation('filler');
-                }
             } else {
                 interim += transcript;
-
-                // Scan only the newly-appended suffix (with a small backward
-                // window so fillers split across chunks still match).
-                const prev = interimScanned[i] || 0;
-                const start = Math.max(0, prev - 10);
-                const fresh = transcript.slice(start);
-                if (fresh && _isFiller(fresh)) {
-                    triggerHesitation('filler');
-                }
-                interimScanned[i] = transcript.length;
-
-                // Prosody: transcript just advanced, so speech is actively producing words.
-                lastTranscriptChangeTime = Date.now();
             }
         }
         transcriptInterimEl.textContent = interim;
     };
 
     recognition.onend = () => {
-        // Auto-restart if session still active (recognition stops after silence)
         if (isSessionActive) {
             try { recognition.start(); } catch (e) {}
         }
@@ -251,64 +158,6 @@ function startSpeechRecognition() {
     try {
         recognition.start();
     } catch (e) {}
-}
-
-// --- Silence Detection (Web Audio API AnalyserNode) ---
-function startSilenceDetection() {
-    audioContext = new AudioContext();
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    analyser = audioContext.createAnalyser();
-    analyser.fftSize = 2048;
-    source.connect(analyser);
-
-    const dataArray = new Uint8Array(analyser.fftSize);
-    let lastSoundTime = Date.now();
-    lastTranscriptChangeTime = Date.now();
-    voicedSince = null;
-
-    function checkSilence() {
-        if (!isSessionActive) return;
-
-        analyser.getByteTimeDomainData(dataArray);
-
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) {
-            const val = (dataArray[i] - 128) / 128;
-            sum += val * val;
-        }
-        const rms = Math.sqrt(sum / dataArray.length);
-
-        const now = Date.now();
-
-        if (rms > 0.02) {
-            // Voiced frame
-            if (voicedSince === null) voicedSince = now;
-            lastSoundTime = now;
-
-            // Drawl: voiced continuously for long enough, but STT isn't producing new words.
-            // Classic "uhhhh..." where energy holds but no phonemes advance.
-            const voicedDuration = now - voicedSince;
-            const sttStall = now - lastTranscriptChangeTime;
-            if (voicedDuration >= DRAWL_MIN_VOICED_MS && sttStall >= DRAWL_STT_STALL_MS) {
-                triggerHesitation('drawl');
-                voicedSince = now;  // reset so it doesn't retrigger in the same run
-            }
-        } else if (rms < 0.01) {
-            // Silent frame — end the voiced run
-            voicedSince = null;
-        }
-
-        const silenceDuration = Date.now() - lastSoundTime;
-        if (silenceDuration >= PAUSE_THRESHOLD_MS && !silenceTimer) {
-            silenceTimer = true;
-            triggerHesitation('pause');
-            setTimeout(() => { silenceTimer = null; }, 1000);
-        }
-
-        requestAnimationFrame(checkSilence);
-    }
-
-    checkSilence();
 }
 
 // --- Phrase Display ---
@@ -343,12 +192,10 @@ function selectPhrase(phrase) {
     }, 4000);
 }
 
-// --- Recap ---
+// --- Recap (inline) ---
 function showRecap(recap, phrasesUsed) {
     isSessionActive = false;
 
-    // Keep the session screen visible so the log panel stays on screen.
-    // Show an inline recap banner and stop listening; recap screen is no longer used.
     statusIndicator.textContent = 'Ended';
     statusIndicator.className = '';
     phraseContainer.innerHTML = '';
@@ -365,7 +212,6 @@ function showRecap(recap, phrasesUsed) {
     inlineRecapEl.style.display = 'block';
     document.getElementById('restart-btn').onclick = () => location.reload();
 
-    // Disable the End Session button now that we've ended.
     const endBtn = document.getElementById('end-btn');
     if (endBtn) endBtn.disabled = true;
 
@@ -375,11 +221,6 @@ function showRecap(recap, phrasesUsed) {
 // --- End Session ---
 document.getElementById('end-btn').onclick = () => {
     sendMessage({ type: 'end_session' });
-};
-
-document.getElementById('new-session-btn').onclick = () => {
-    recapScreen.style.display = 'none';
-    scenarioScreen.style.display = 'block';
 };
 
 // --- Live Transcript ---
@@ -429,7 +270,7 @@ function appendLog(msg) {
 
     addBlock('prompt', msg.prompt);
     addBlock('output', msg.output);
-    addBlock('parsed', msg.context || msg.phrases);
+    addBlock('parsed', msg.phrases);
 
     logPanelEl.appendChild(entry);
     logPanelEl.scrollTop = logPanelEl.scrollHeight;
@@ -454,10 +295,6 @@ function cleanup() {
         mediaStream.getTracks().forEach(t => t.stop());
         mediaStream = null;
     }
-    if (audioContext) {
-        audioContext.close();
-        audioContext = null;
-    }
     if (ws) {
         ws.close();
         ws = null;
@@ -465,4 +302,4 @@ function cleanup() {
 }
 
 // --- Start ---
-init();
+startBtn.onclick = () => startSession();

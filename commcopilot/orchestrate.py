@@ -1,17 +1,19 @@
-"""IBM watsonx Orchestrate interface for CommCopilot.
+"""IBM watsonx Orchestrate interface for CommCopilot (listener mode).
 
 Authentication flow:
   IAM API key -> POST iam.cloud.ibm.com/identity/token -> access_token (1h TTL)
   access_token used as Bearer in every Orchestrate API call
 
-Two call paths:
-  call_supervisor_agent()    -- POST to SupervisorAgent (chains collaborators internally)
-  call_pipeline_sequential() -- 3 sequential calls: ContextAgent -> PhraseAgent -> SafetyAgent
+Call path:
+  call_context_listener()  -- POSTs a silent STT chunk to ContextAgent, which
+                              accumulates conversation context via thread_id.
+                              ContextAgent's guidelines decide whether to stay
+                              silent or invoke PhraseAgent+SafetyAgent
+                              collaborators and return phrases.
 
-USE_SUPERVISOR env flag (config.py) picks which path server/app.py uses.
-
-API endpoint format (IBM Cloud SaaS):
+API endpoint (IBM Cloud SaaS):
   POST {ORCHESTRATE_URL}/v1/orchestrate/{agent_id}/chat/completions
+  Header X-IBM-THREAD-ID: <uuid>      (keeps the conversation thread alive)
   Response: OpenAI-compatible {"choices": [{"message": {"content": "..."}}]}
 """
 
@@ -23,31 +25,17 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-EventCallback = Optional[Callable[[dict], Awaitable[None]]]
-
 from commcopilot.config import (
     CONTEXT_AGENT_ID,
     FALLBACK_PHRASES,
     ORCHESTRATE_API_KEY,
     ORCHESTRATE_TIMEOUT_S,
     ORCHESTRATE_URL,
-    PHRASE_AGENT_ID,
-    SAFETY_AGENT_ID,
-    SCENARIOS,
-    SUPERVISOR_AGENT_ID,
 )
 
+EventCallback = Optional[Callable[[dict], Awaitable[None]]]
+
 logger = logging.getLogger(__name__)
-
-
-async def _emit(on_event: EventCallback, event: dict) -> None:
-    if on_event is None:
-        return
-    try:
-        await on_event(event)
-    except Exception as e:
-        logger.debug("on_event callback failed: %s", e)
-
 
 _FENCE_RE = re.compile(r"^```[a-z]*\n?", re.MULTILINE)
 
@@ -67,16 +55,25 @@ class OrchestrateParseError(OrchestrateError):
     pass
 
 
+async def _emit(on_event: EventCallback, event: dict) -> None:
+    if on_event is None:
+        return
+    try:
+        await on_event(event)
+    except Exception as e:
+        logger.debug("on_event callback failed: %s", e)
+
+
 def _strip_fences(raw: str) -> str:
     return _FENCE_RE.sub("", raw).rstrip("`").strip()
 
 
 async def _get_iam_token() -> str:
-    """Exchange IAM API key for an access token. Caches the token until 5 min before expiry."""
+    """Exchange IAM API key for an access token. Cached until 5 min before expiry."""
     global _iam_token_cache
     token, expires_at = _iam_token_cache
 
-    if token and time.time() < expires_at - 300:  # 5-min buffer
+    if token and time.time() < expires_at - 300:
         return token
 
     async with httpx.AsyncClient(timeout=10.0) as client:
@@ -93,14 +90,19 @@ async def _get_iam_token() -> str:
         token = data["access_token"]
         expires_at = time.time() + data.get("expires_in", 3600)
         _iam_token_cache = (token, expires_at)
-        logger.debug("IAM token refreshed, expires in %ds", data.get("expires_in", 3600))
         return token
 
 
-async def _chat(agent_id: str, prompt: str, warmup: bool = False) -> str:
+async def _chat(
+    agent_id: str,
+    prompt: str,
+    thread_id: Optional[str] = None,
+    warmup: bool = False,
+) -> str:
     """POST a message to one Orchestrate agent and return the response text.
 
-    Uses OpenAI-compatible /chat/completions endpoint.
+    When `thread_id` is provided it is sent as the X-IBM-THREAD-ID header so
+    the agent accumulates conversation history across successive calls.
     """
     if not ORCHESTRATE_URL:
         raise OrchestrateError("ORCHESTRATE_URL is not configured")
@@ -117,6 +119,8 @@ async def _chat(agent_id: str, prompt: str, warmup: bool = False) -> str:
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+    if thread_id:
+        headers["X-IBM-THREAD-ID"] = thread_id
 
     try:
         async with httpx.AsyncClient(timeout=ORCHESTRATE_TIMEOUT_S) as client:
@@ -135,193 +139,103 @@ async def _chat(agent_id: str, prompt: str, warmup: bool = False) -> str:
         raise OrchestrateError(f"Agent {agent_id} call failed: {e}") from e
 
 
-def _scenario_context(scenario: str) -> str:
-    return SCENARIOS.get(scenario, SCENARIOS["office_hours"])["system_context"]
+def _is_silent_response(raw: str) -> bool:
+    """ContextAgent guideline 1 says 'return empty' when the student is fluent.
 
-
-def _transcript_text(transcript_buffer: list[str]) -> str:
-    return "\n".join(transcript_buffer) if transcript_buffer else "(no transcript yet)"
-
-
-async def call_supervisor_agent(
-    scenario: str,
-    transcript_buffer: list[str],
-    phrases_used: list[str],
-    warmup: bool = False,
-    on_event: EventCallback = None,
-) -> list[str]:
-    """Call SupervisorAgent. It chains ContextAgent->PhraseAgent->SafetyAgent via collaborators.
-
-    Returns a list of 2-3 safe phrase strings.
-    On warmup=True swallows the result (cold-start mitigation only).
+    Treat empty, whitespace-only, and one-word acknowledgements as silent.
     """
-    context = _scenario_context(scenario)
-    transcript = _transcript_text(transcript_buffer)
+    text = (raw or "").strip().strip("`").strip()
+    if not text:
+        return True
+    # Sometimes the LLM still emits a single filler token like "ok" / "."
+    if len(text) <= 2:
+        return True
+    return False
+
+
+async def call_context_listener(
+    chunk: str,
+    thread_id: str,
+    phrases_used: list[str],
+    is_pause: bool = False,
+    on_event: EventCallback = None,
+) -> Optional[list[str]]:
+    """Send one STT chunk to ContextAgent as a silent listener message.
+
+    ContextAgent infers role/tone/intent from the running thread itself — no
+    scenario context is provided by the server.
+
+    Returns:
+        - list[str] of 2-3 safe phrases if ContextAgent's "hesitation" guideline
+          fires and it runs the Phrase/Safety collaborators.
+        - None if ContextAgent decides to stay silent (no hesitation).
+    """
     used_hint = (
-        f"Phrases already used (avoid repeating): {', '.join(phrases_used[-5:])}"
+        f"Phrases the student already used (avoid suggesting these again): "
+        f"{', '.join(phrases_used[-5:])}"
         if phrases_used
         else ""
     )
+    marker = "[pause]" if is_pause else chunk
+
     prompt = (
-        f"Scenario: {context}\n"
-        f"Transcript:\n{transcript}\n"
+        f"New transcript chunk from student: {marker}\n"
         f"{used_hint}\n\n"
-        "Use ContextAgent to understand the situation, then PhraseAgent to generate 3 short phrases "
-        "the student can say next, then SafetyAgent to verify them. "
-        "Return ONLY a JSON array of 2-3 phrase strings. No markdown fences, no explanation."
+        "Apply your guidelines. Infer role, tone, and intent from the running "
+        "thread. If the student is speaking fluently, return an empty string. "
+        "If the student is hesitating, invoke phrase_generation_agent then "
+        "safety_filter_agent and return ONLY a JSON array of 2-3 safe phrase "
+        "strings."
     )
 
-    await _emit(on_event, {
-        "stage": "supervisor",
-        "status": "calling",
-        "detail": "SupervisorAgent chaining Context→Phrase→Safety",
-        "prompt": prompt,
-    })
-    raw = await _chat(SUPERVISOR_AGENT_ID, prompt, warmup=warmup)
-
-    if warmup:
-        return []
-
-    await _emit(on_event, {"stage": "supervisor", "status": "responded", "output": raw})
-
-    try:
-        phrases = json.loads(_strip_fences(raw))
-        if isinstance(phrases, list) and phrases:
-            result = [str(p) for p in phrases[:3]]
-            await _emit(on_event, {"stage": "supervisor", "status": "parsed", "phrases": result})
-            return result
-        raise OrchestrateParseError(f"Unexpected shape: {raw!r}")
-    except json.JSONDecodeError as e:
-        raise OrchestrateParseError(f"JSON parse failed: {raw!r}") from e
-
-
-async def call_pipeline_sequential(
-    scenario: str,
-    transcript_buffer: list[str],
-    phrases_used: list[str],
-    on_event: EventCallback = None,
-) -> list[str]:
-    """Fallback: 3 sequential calls to individual agents (USE_SUPERVISOR=false)."""
-    context = _scenario_context(scenario)
-    transcript = _transcript_text(transcript_buffer)
-
-    # Step 1: ContextAgent
-    ctx_prompt = (
-        f"Scenario: {context}\n"
-        f"Transcript:\n{transcript}\n\n"
-        'Return ONLY JSON: {"role": "...", "tone": "...", "intent": "..."}. No fences.'
-    )
     await _emit(on_event, {
         "stage": "context_agent",
         "status": "calling",
-        "detail": "Inferring role, tone, intent",
-        "prompt": ctx_prompt,
+        "detail": "listener chunk" + (" [pause]" if is_pause else ""),
+        "prompt": prompt,
     })
-    ctx_raw = await _chat(CONTEXT_AGENT_ID, ctx_prompt)
-    await _emit(on_event, {"stage": "context_agent", "status": "responded", "output": ctx_raw})
+
     try:
-        ctx = json.loads(_strip_fences(ctx_raw))
-    except Exception:
-        ctx = {"role": "professor", "tone": "formal", "intent": "continue conversation"}
-    await _emit(on_event, {"stage": "context_agent", "status": "parsed", "context": ctx})
-
-    # Step 2: PhraseAgent
-    used_hint = (
-        f"Avoid repeating: {', '.join(phrases_used[-5:])}" if phrases_used else ""
-    )
-    phrase_prompt = (
-        f"Talking to: {ctx.get('role', 'person')}, tone: {ctx.get('tone', 'formal')}, "
-        f"intent: {ctx.get('intent', 'continue conversation')}.\n"
-        f"Transcript:\n{transcript}\n"
-        f"{used_hint}\n\n"
-        "Generate 3 short phrases (under 15 words each) the student can say next. "
-        "Return ONLY a JSON array. No fences."
-    )
-    await _emit(on_event, {
-        "stage": "phrase_agent",
-        "status": "calling",
-        "detail": "Generating candidate phrases",
-        "prompt": phrase_prompt,
-    })
-    phrase_raw = await _chat(PHRASE_AGENT_ID, phrase_prompt)
-    await _emit(on_event, {"stage": "phrase_agent", "status": "responded", "output": phrase_raw})
-    try:
-        phrases: list[str] = json.loads(_strip_fences(phrase_raw))
-        if not isinstance(phrases, list):
-            raise ValueError
-    except Exception:
-        await _emit(on_event, {"stage": "phrase_agent", "status": "parse_failed", "detail": "using fallback"})
-        return list(FALLBACK_PHRASES)
-    await _emit(on_event, {"stage": "phrase_agent", "status": "parsed", "phrases": phrases})
-
-    # Step 3: SafetyAgent
-    safety_prompt = (
-        f"Check these phrases for profanity or inappropriate content: {json.dumps(phrases)}\n"
-        "Return ONLY a JSON array of safe phrases. "
-        f"If fewer than 2 are safe, return {json.dumps(list(FALLBACK_PHRASES))}. No fences."
-    )
-    await _emit(on_event, {
-        "stage": "safety_agent",
-        "status": "calling",
-        "detail": "Verifying phrases are safe",
-        "prompt": safety_prompt,
-    })
-    safety_raw = await _chat(SAFETY_AGENT_ID, safety_prompt)
-    await _emit(on_event, {"stage": "safety_agent", "status": "responded", "output": safety_raw})
-    try:
-        safe: list[str] = json.loads(_strip_fences(safety_raw))
-        if isinstance(safe, list) and safe:
-            result = [str(p) for p in safe[:3]]
-            await _emit(on_event, {"stage": "safety_agent", "status": "parsed", "phrases": result})
-            return result
-    except Exception:
-        pass
-
-    await _emit(on_event, {"stage": "safety_agent", "status": "fallback", "detail": "using unchecked phrases"})
-    return phrases[:3] if phrases else list(FALLBACK_PHRASES)
-
-
-async def get_phrases(
-    scenario: str,
-    transcript_buffer: list[str],
-    phrases_used: list[str],
-    use_supervisor: bool = True,
-    on_event: EventCallback = None,
-) -> list[str]:
-    """Entry point called by server/app.py. Always returns a non-empty list."""
-    try:
-        if use_supervisor:
-            return await call_supervisor_agent(
-                scenario, transcript_buffer, phrases_used, on_event=on_event
-            )
-        else:
-            return await call_pipeline_sequential(
-                scenario, transcript_buffer, phrases_used, on_event=on_event
-            )
+        raw = await _chat(CONTEXT_AGENT_ID, prompt, thread_id=thread_id)
     except OrchestrateTimeoutError:
-        logger.warning("Orchestrate timed out, returning fallback phrases")
-    except OrchestrateParseError as e:
-        logger.warning("Orchestrate parse error: %s", e)
+        await _emit(on_event, {"stage": "context_agent", "status": "timeout"})
+        return None
     except OrchestrateError as e:
-        logger.error("Orchestrate error: %s", e)
-    except Exception as e:
-        logger.error("Unexpected error: %s", e)
+        await _emit(on_event, {"stage": "context_agent", "status": "error", "detail": str(e)})
+        return None
 
-    return list(FALLBACK_PHRASES)
+    await _emit(on_event, {"stage": "context_agent", "status": "responded", "output": raw})
+
+    if _is_silent_response(raw):
+        await _emit(on_event, {"stage": "context_agent", "status": "silent", "detail": "no hesitation"})
+        return None
+
+    stripped = _strip_fences(raw)
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        await _emit(on_event, {
+            "stage": "context_agent",
+            "status": "parse_failed",
+            "detail": "treating as silent",
+        })
+        return None
+
+    if isinstance(parsed, list) and parsed:
+        phrases = [str(p) for p in parsed[:3]]
+        await _emit(on_event, {"stage": "context_agent", "status": "parsed", "phrases": phrases})
+        return phrases
+
+    await _emit(on_event, {"stage": "context_agent", "status": "unexpected_shape"})
+    return None
 
 
-async def warmup(scenario: str) -> None:
-    """Fire a cheap warm-up call to avoid IAM token + cold-start latency on first hesitation."""
+async def warmup() -> None:
+    """Pre-fetch the IAM token so the first real call doesn't pay for it."""
     if not ORCHESTRATE_URL or not ORCHESTRATE_API_KEY:
-        logger.debug("Warm-up skipped: ORCHESTRATE_URL or ORCHESTRATE_API_KEY not set")
-        return
-    agent_id = SUPERVISOR_AGENT_ID if SUPERVISOR_AGENT_ID else CONTEXT_AGENT_ID
-    if not agent_id:
-        logger.debug("Warm-up skipped: no agent IDs configured yet")
         return
     try:
-        # Pre-fetch the IAM token so first real call is instant
         await _get_iam_token()
-        logger.info("IAM token warmed up for scenario: %s", scenario)
+        logger.info("IAM token warmed up")
     except Exception as e:
         logger.warning("Warm-up failed (non-fatal): %s", e)

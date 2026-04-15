@@ -12,21 +12,16 @@ WATSONX_URL = os.getenv("WATSONX_URL", "")
 ORCHESTRATE_URL = os.getenv("ORCHESTRATE_URL", "")
 ORCHESTRATE_API_KEY = os.getenv("ORCHESTRATE_API_KEY", "")
 
-# Agent IDs — fill in after: orchestrate agents import + orchestrate agents list
-SUPERVISOR_AGENT_ID = os.getenv("SUPERVISOR_AGENT_ID", "")
+# Agent IDs — ContextAgent is the listener; it invokes PhraseAgent + SafetyAgent
+# as collaborators, so only CONTEXT_AGENT_ID is used by the server directly.
 CONTEXT_AGENT_ID = os.getenv("CONTEXT_AGENT_ID", "")
-PHRASE_AGENT_ID = os.getenv("PHRASE_AGENT_ID", "")
-SAFETY_AGENT_ID = os.getenv("SAFETY_AGENT_ID", "")
-
-# Pipeline routing
-USE_SUPERVISOR = os.getenv("USE_SUPERVISOR", "true").lower() == "true"
 
 # Thresholds
-HESITATION_PAUSE_MS = 3000        # Browser silence detection threshold (ms)
-HESITATION_COOLDOWN_S = 5         # Debounce: ignore hesitations for this long after one triggers
+HESITATION_PAUSE_MS = 3000        # Server-side [pause] heartbeat threshold (ms)
+HESITATION_COOLDOWN_S = 5         # Kept for client compatibility
 PHRASE_AUTO_DISMISS_S = 5         # Phrase cards auto-dismiss
 LATENCY_BUDGET_S = 4.0            # Target max pipeline latency (ideal)
-ORCHESTRATE_TIMEOUT_S = 15.0      # SupervisorAgent chains 3 collaborators internally — needs headroom
+ORCHESTRATE_TIMEOUT_S = 15.0      # ContextAgent may chain PhraseAgent+SafetyAgent — needs headroom
 MIN_SPEECH_CONFIDENCE = 0.6       # Minimum Web Speech API confidence to accept transcript
 TRANSCRIPT_WINDOW = 10            # Number of transcript segments to keep in sliding window
 SESSION_TIMEOUT_S = 1800          # Evict sessions idle longer than this (30 min)
@@ -40,27 +35,3 @@ FALLBACK_PHRASES = [
     "Let me think about that for a moment.",
     "I understand. Thank you.",
 ]
-
-# Scenarios
-SCENARIOS = {
-    "office_hours": {
-        "name": "Office Hours with Professor",
-        "default_role": "professor",
-        "default_tone": "formal",
-        "system_context": (
-            "The student is in a professor's office during office hours. "
-            "The conversation is academic and formal. The professor discusses "
-            "deadlines, assignments, grades, or course material."
-        ),
-    },
-    "admin_office": {
-        "name": "Admin Office Interaction",
-        "default_role": "admin_staff",
-        "default_tone": "semi-formal",
-        "system_context": (
-            "The student is at a university administrative office. "
-            "The conversation is semi-formal and procedural, covering topics like "
-            "enrollment, housing, financial aid, or document requests."
-        ),
-    },
-}

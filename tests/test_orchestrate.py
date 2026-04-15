@@ -1,29 +1,21 @@
-"""Tests for commcopilot/orchestrate.py."""
+"""Tests for commcopilot/orchestrate.py (listener mode)."""
 
 import json
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, patch
 
 from commcopilot.orchestrate import (
-    call_supervisor_agent,
-    call_pipeline_sequential,
-    get_phrases,
+    call_context_listener,
     _strip_fences,
-    OrchestrateTimeoutError,
-    OrchestrateParseError,
+    _is_silent_response,
 )
-from commcopilot.config import FALLBACK_PHRASES
 
-# Patch IAM token fetch for all tests that call _chat
 _mock_iam = patch("commcopilot.orchestrate._get_iam_token", new=AsyncMock(return_value="test-token"))
 
 
-# --- _strip_fences ---
-
 def test_strip_fences_json_block():
     raw = '```json\n["phrase 1", "phrase 2"]\n```'
-    result = _strip_fences(raw)
-    assert result == '["phrase 1", "phrase 2"]'
+    assert _strip_fences(raw) == '["phrase 1", "phrase 2"]'
 
 
 def test_strip_fences_plain_text_unchanged():
@@ -31,96 +23,83 @@ def test_strip_fences_plain_text_unchanged():
     assert _strip_fences(raw) == raw
 
 
-# --- call_supervisor_agent ---
+def test_is_silent_empty():
+    assert _is_silent_response("") is True
+    assert _is_silent_response("   ") is True
+    assert _is_silent_response("``` ```") is True
+
+
+def test_is_silent_short_filler():
+    assert _is_silent_response("ok") is True
+    assert _is_silent_response(".") is True
+
+
+def test_is_silent_phrases_not_silent():
+    assert _is_silent_response('["Could you clarify?"]') is False
+
 
 @pytest.mark.asyncio
-async def test_supervisor_happy_path():
-    phrases = ["Could you clarify?", "I see, thank you.", "Could you repeat that?"]
+async def test_listener_returns_none_on_silent():
+    with _mock_iam, patch("commcopilot.orchestrate._chat", new=AsyncMock(return_value="")):
+        result = await call_context_listener(
+            chunk="so the deadline is tomorrow",
+            thread_id="tid-1",
+            phrases_used=[],
+        )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_listener_returns_phrases_on_hesitation():
+    phrases = ["Could you clarify?", "I see, thank you."]
     with _mock_iam, patch("commcopilot.orchestrate._chat", new=AsyncMock(return_value=json.dumps(phrases))):
-        result = await call_supervisor_agent("office_hours", ["um the deadline"], [])
+        result = await call_context_listener(
+            chunk="um I was wondering",
+            thread_id="tid-1",
+            phrases_used=[],
+        )
     assert result == phrases
 
 
 @pytest.mark.asyncio
-async def test_supervisor_strips_fences():
-    phrases = ["Phrase A", "Phrase B", "Phrase C"]
+async def test_listener_strips_fences():
+    phrases = ["A", "B", "C"]
     fenced = f"```json\n{json.dumps(phrases)}\n```"
     with _mock_iam, patch("commcopilot.orchestrate._chat", new=AsyncMock(return_value=fenced)):
-        result = await call_supervisor_agent("office_hours", ["transcript"], [])
+        result = await call_context_listener(
+            chunk="uh",
+            thread_id="tid-1",
+            phrases_used=[],
+        )
     assert result == phrases
 
 
 @pytest.mark.asyncio
-async def test_supervisor_parse_error_raises():
-    with _mock_iam, patch("commcopilot.orchestrate._chat", new=AsyncMock(return_value="not json at all")):
-        with pytest.raises(OrchestrateParseError):
-            await call_supervisor_agent("office_hours", ["transcript"], [])
+async def test_listener_parse_failure_returns_none():
+    with _mock_iam, patch("commcopilot.orchestrate._chat", new=AsyncMock(return_value="not json but long enough")):
+        result = await call_context_listener(
+            chunk="um",
+            thread_id="tid-1",
+            phrases_used=[],
+        )
+    assert result is None
 
 
 @pytest.mark.asyncio
-async def test_supervisor_warmup_returns_empty():
-    with _mock_iam, patch("commcopilot.orchestrate._chat", new=AsyncMock(return_value='["p1", "p2"]')):
-        result = await call_supervisor_agent("office_hours", ["hello"], [], warmup=True)
-    assert result == []
+async def test_listener_passes_pause_marker():
+    captured = {}
 
-
-# --- call_pipeline_sequential ---
-
-@pytest.mark.asyncio
-async def test_sequential_happy_path():
-    ctx_response = '{"role": "professor", "tone": "formal", "intent": "ask about grade"}'
-    phrase_response = '["Could you explain?", "I see.", "Thank you."]'
-    safety_response = '["Could you explain?", "I see.", "Thank you."]'
-
-    responses = [ctx_response, phrase_response, safety_response]
-    call_count = 0
-
-    async def mock_chat(agent_id, prompt, warmup=False):
-        nonlocal call_count
-        r = responses[call_count]
-        call_count += 1
-        return r
+    async def mock_chat(agent_id, prompt, thread_id=None, warmup=False):
+        captured["prompt"] = prompt
+        captured["thread_id"] = thread_id
+        return ""
 
     with _mock_iam, patch("commcopilot.orchestrate._chat", side_effect=mock_chat):
-        result = await call_pipeline_sequential("office_hours", ["transcript"], [])
-
-    assert len(result) == 3
-    assert "Could you explain?" in result
-
-
-@pytest.mark.asyncio
-async def test_sequential_context_failure_uses_defaults():
-    """If ContextAgent returns garbage, pipeline continues with default context."""
-    phrase_response = '["phrase 1", "phrase 2", "phrase 3"]'
-    safety_response = '["phrase 1", "phrase 2", "phrase 3"]'
-
-    responses = ["INVALID_JSON", phrase_response, safety_response]
-    call_count = 0
-
-    async def mock_chat(agent_id, prompt, warmup=False):
-        nonlocal call_count
-        r = responses[call_count]
-        call_count += 1
-        return r
-
-    with _mock_iam, patch("commcopilot.orchestrate._chat", side_effect=mock_chat):
-        result = await call_pipeline_sequential("office_hours", ["transcript"], [])
-
-    assert len(result) > 0
-
-
-# --- get_phrases (entry point) ---
-
-@pytest.mark.asyncio
-async def test_get_phrases_returns_fallback_on_error():
-    with patch("commcopilot.orchestrate.call_supervisor_agent", new=AsyncMock(side_effect=Exception("boom"))):
-        result = await get_phrases("office_hours", ["transcript"], [], use_supervisor=True)
-    assert result == list(FALLBACK_PHRASES)
-
-
-@pytest.mark.asyncio
-async def test_get_phrases_uses_sequential_when_flag_false():
-    expected = ["p1", "p2", "p3"]
-    with patch("commcopilot.orchestrate.call_pipeline_sequential", new=AsyncMock(return_value=expected)):
-        result = await get_phrases("office_hours", ["transcript"], [], use_supervisor=False)
-    assert result == expected
+        await call_context_listener(
+            chunk="ignored",
+            thread_id="tid-42",
+            phrases_used=[],
+            is_pause=True,
+        )
+    assert "[pause]" in captured["prompt"]
+    assert captured["thread_id"] == "tid-42"

@@ -9,7 +9,6 @@ def base_state() -> SessionState:
     """A minimal SessionState for testing."""
     return SessionState(
         session_id="test-session-123",
-        scenario="office_hours",
         transcript_buffer=[
             "The deadline is Friday.",
             "Submit via the course portal.",

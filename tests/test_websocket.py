@@ -1,11 +1,10 @@
-"""Tests for server/app.py WebSocket behavior."""
+"""Tests for server/app.py WebSocket behavior (listener mode)."""
 
 import pytest
 from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from server.app import app
-from commcopilot.config import FALLBACK_PHRASES
 
 
 @pytest.fixture
@@ -13,10 +12,8 @@ def client():
     return TestClient(app)
 
 
-def _setup_session(ws, scenario="office_hours"):
-    """Send scenario and wait for session_ready. Returns the session_ready message."""
-    ws.send_json({"type": "scenario", "scenario": scenario})
-    # Drain until session_ready (warm-up is a background task, skipped when ORCHESTRATE_URL empty)
+def _setup_session(ws):
+    ws.send_json({"type": "start"})
     for _ in range(10):
         msg = ws.receive_json()
         if msg["type"] == "session_ready":
@@ -24,96 +21,52 @@ def _setup_session(ws, scenario="office_hours"):
     raise AssertionError("Did not receive session_ready")
 
 
-def test_scenarios_endpoint(client):
-    resp = client.get("/api/scenarios")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "office_hours" in data
-    assert "admin_office" in data
-    assert "name" in data["office_hours"]
-
-
-def test_session_ready_after_scenario(client):
-    """Server sends session_ready with config after receiving scenario message."""
+def test_session_ready_after_start(client):
     with client.websocket_connect("/ws") as ws:
         msg = _setup_session(ws)
         assert msg["type"] == "session_ready"
         assert "phrase_auto_dismiss_s" in msg
         assert "min_speech_confidence" in msg
-        assert "hesitation_cooldown_s" in msg
+        assert "hesitation_pause_ms" in msg
 
 
-def test_hesitation_triggers_phrases(client):
-    """Hesitation message triggers thinking then phrases."""
+def _drain_until(ws, wanted_type, max_msgs=20):
+    for _ in range(max_msgs):
+        msg = ws.receive_json()
+        if msg["type"] == wanted_type:
+            return msg
+    raise AssertionError(f"Did not receive {wanted_type}")
+
+
+def test_transcript_chunk_triggers_listener_phrases(client):
+    """A transcript chunk routes to call_context_listener; phrases are forwarded."""
     mock_phrases = ["I understand.", "Could you clarify?", "Thank you."]
 
-    with patch("server.app.get_phrases", new=AsyncMock(return_value=mock_phrases)):
+    with patch("server.app.call_context_listener", new=AsyncMock(return_value=mock_phrases)):
         with client.websocket_connect("/ws") as ws:
             _setup_session(ws)
             ws.send_json({"type": "transcript", "text": "um I was wondering"})
-            ws.send_json({"type": "hesitation", "trigger": "filler"})
 
-            # Expect: thinking, then phrases
-            msg1 = ws.receive_json()
-            assert msg1["type"] == "thinking"
-
-            msg2 = ws.receive_json()
-            assert msg2["type"] == "phrases"
-            assert msg2["phrases"] == mock_phrases
+            _drain_until(ws, "thinking")
+            msg = _drain_until(ws, "phrases")
+            assert msg["phrases"] == mock_phrases
 
 
-def test_awaiting_phrases_cleared_after_pipeline(client):
-    """awaiting_phrases should be False after a pipeline call completes, allowing future hesitations."""
-    call_count = 0
-
-    async def counting_get_phrases(*args, **kwargs):
-        nonlocal call_count
-        call_count += 1
-        return ["phrase one", "phrase two", "phrase three"]
-
-    with patch("server.app.get_phrases", side_effect=counting_get_phrases):
+def test_silent_listener_emits_idle(client):
+    with patch("server.app.call_context_listener", new=AsyncMock(return_value=None)):
         with client.websocket_connect("/ws") as ws:
             _setup_session(ws)
+            ws.send_json({"type": "transcript", "text": "the deadline is friday"})
 
-            # First hesitation
-            ws.send_json({"type": "hesitation", "trigger": "pause"})
-            assert ws.receive_json()["type"] == "thinking"
-            assert ws.receive_json()["type"] == "phrases"
-
-            # Second hesitation — should also be processed (awaiting_phrases was reset)
-            ws.send_json({"type": "hesitation", "trigger": "filler"})
-            assert ws.receive_json()["type"] == "thinking"
-            assert ws.receive_json()["type"] == "phrases"
-
-    # Both hesitations should have triggered the pipeline
-    assert call_count == 2
+            _drain_until(ws, "thinking")
+            _drain_until(ws, "idle")
 
 
 def test_end_session_returns_recap(client):
-    """end_session returns a recap containing the phrases the user selected."""
     with client.websocket_connect("/ws") as ws:
         _setup_session(ws)
-
         ws.send_json({"type": "phrase_selected", "phrase": "Could you clarify?"})
         ws.send_json({"type": "end_session"})
 
-        msg = ws.receive_json()
-        assert msg["type"] == "recap"
-        assert "phrases_used" in msg
+        msg = _drain_until(ws, "recap")
         assert "Could you clarify?" in msg["phrases_used"]
-
-
-def test_transcript_buffer_filled(client):
-    """Transcript messages should accumulate in the session buffer."""
-    with patch("server.app.get_phrases", new=AsyncMock(return_value=["p1", "p2", "p3"])):
-        with client.websocket_connect("/ws") as ws:
-            _setup_session(ws)
-
-            ws.send_json({"type": "transcript", "text": "The deadline is Friday."})
-            ws.send_json({"type": "transcript", "text": "Submit via the portal."})
-            ws.send_json({"type": "hesitation", "trigger": "pause"})
-
-            ws.receive_json()  # thinking
-            msg = ws.receive_json()  # phrases
-            assert msg["type"] == "phrases"
-            assert len(msg["phrases"]) > 0

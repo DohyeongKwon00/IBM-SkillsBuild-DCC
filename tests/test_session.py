@@ -8,7 +8,6 @@ from commcopilot.config import TRANSCRIPT_WINDOW
 
 def test_session_defaults():
     state = SessionState()
-    assert state.scenario == "office_hours"
     assert state.transcript_buffer == []
     assert state.phrases_used == []
     assert state.hesitation_count == 0

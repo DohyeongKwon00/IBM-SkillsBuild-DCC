@@ -8,17 +8,16 @@
 </head>
 <body>
     <div id="app">
-        <!-- Scenario Selection -->
-        <div id="scenario-screen">
+        <!-- Start screen -->
+        <div id="start-screen">
             <h1>CommCopilot</h1>
-            <p>Select a conversation scenario</p>
-            <div id="scenario-cards"></div>
+            <p>Press start to begin listening. The assistant will infer context from your conversation.</p>
+            <button id="start-btn">Start Session</button>
         </div>
 
         <!-- Active Session -->
         <div id="session-screen" style="display:none;">
             <div id="status-bar">
-                <span id="scenario-label"></span>
                 <span id="status-indicator">Listening...</span>
                 <button id="end-btn">End Session</button>
             </div>
