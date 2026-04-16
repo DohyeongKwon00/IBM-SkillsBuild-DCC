@@ -10,6 +10,8 @@
 #    (Situation, Role, User goal, Recommended tone, Recommended formality, Likely intent, Confidence)를 명시함
 # 8) “Do not overanalyze simple requests”, “Focus on interpretation, not final phrase generation” 같은 해석 원칙을 추가함
 # 9) 전체 키 이름은 listener/role 혼용 없이 role 하나로 통일함
+# 10) hesitation_type을 추가해 망설임을 기본적으로 repeat-request가 아니라
+#     response-support 문제로 해석하도록 바꿈
 
 spec_version: v1
 kind: native
@@ -19,8 +21,11 @@ description: >
   On every STT chunk it updates its understanding of the conversation context,
   including situation, role, user goal, tone, formality, intent, and confidence,
   and decides whether the student is showing hesitation. If hesitation is detected,
-  it invokes phrase_generation_agent and safety_filter_agent to produce safe,
-  context-aware phrase suggestions. Otherwise it stays silent.
+  it treats the hesitation primarily as the student needing help continuing or
+  completing their intended response, then invokes phrase_generation_agent and
+  safety_filter_agent to produce safe, context-aware phrase suggestions. It only
+  supports repeat-request phrases when there is strong evidence the student did
+  not hear or understand the other speaker. Otherwise it stays silent.
 
 llm: watsonx/ibm/gpt-oss-120b
 
@@ -58,6 +63,10 @@ instructions: |
          - intent: the likely communication intent
            (e.g. "ask", "clarify", "request", "apologize", "agree", "decline",
            "respond", "continue speaking")
+         - hesitation_type: the most useful interpretation of the hesitation
+           Choose one:
+           "unfinished_answer", "response_planning", "clarification_request",
+           "recovery_after_freezing"
          - tone: the recommended response style
            Choose one primary tone when possible:
            "polite", "professional", "friendly", "concise", "apologetic", "confident"
@@ -95,11 +104,41 @@ instructions: |
        Stay completely silent.
 
     4. If the student IS hesitating:
+         - Default to response-support, not repeat-request.
+         - Treat hesitation primarily as evidence that the student is stuck,
+           trying to answer, trying to finish an unfinished thought, or trying
+           to recover after freezing.
+         - Do NOT assume hesitation means the student wants the other person to
+           repeat themselves.
+         - Classify the hesitation internally:
+             unfinished_answer:
+               The student started a thought but did not finish it, restarted,
+               trailed off, or left the answer incomplete.
+             response_planning:
+               The other person appears to have asked something and the student
+               is trying to construct an answer.
+             clarification_request:
+               Use ONLY when there is strong evidence the student did not hear
+               or understand the other speaker, such as "sorry?", "what was that?",
+               "I didn't catch that", a clear misunderstanding, or an explicit
+               request to hear again.
+             recovery_after_freezing:
+               The student paused, froze, or needs a short bridge to continue
+               their own response.
+         - For unfinished_answer, response_planning, and recovery_after_freezing,
+           downstream phrases should complete or continue what the student was
+           trying to say, answer the current question, or help explain the
+           student's point naturally.
+         - Only allow repeat-request phrases when hesitation_type is
+           clarification_request.
+         - Minimize generic apologies. Use apology language only when the
+           context strongly supports apologizing.
          - Prepare a structured internal context summary in this form:
 
            Situation:
            Role:
            User goal:
+           Hesitation type:
            Recommended tone:
            Recommended formality:
            Likely intent:
@@ -139,6 +178,11 @@ instructions: |
       that were not provided
     - Do not ignore uncertainty when confidence is low
     - Prioritize what is most useful for downstream response generation
+    - Focus on what the speaker was trying to say, not merely on any generic
+      phrase the speaker could say next
+    - Repeat-request phrases are a fallback path only, not the default path
+    - Generic apology phrases are low priority unless the context clearly calls
+      for an apology
     - Keep internal interpretation concise, structured, and easy to scan
 
   Context window guidance:
@@ -164,7 +208,10 @@ guidelines:
       self-repair, or restart.
     action: >
       Build the current internal context using situation, role, user_goal,
-      intent, tone, formality, and confidence. Invoke the
+      intent, hesitation_type, tone, formality, and confidence. Default
+      hesitation_type to unfinished_answer, response_planning, or
+      recovery_after_freezing unless the transcript gives strong evidence that
+      the student did not hear or understand the other speaker. Invoke the
       phrase_generation_agent collaborator with this context and the most recent
       transcript segments to generate 3 candidate phrases. Then invoke the
       safety_filter_agent collaborator to verify them. Return ONLY a JSON array

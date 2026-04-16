@@ -15,7 +15,11 @@ instructions: |
 
   Return ONLY the safe phrases as a JSON array.
   If fewer than 2 phrases are safe, return exactly:
-  ["Could you repeat that, please?", "Let me think about that for a moment.", "I understand. Thank you."]
+  ["Let me think about that for a moment.", "I'm not completely sure, but I can check.", "Let me explain that more clearly."]
+
+  Do not add generic apology or repeat-request phrases as replacements unless
+  the input context clearly indicates a real need to apologize or ask the other
+  person to repeat themselves.
 
   No markdown fences. No explanation. JSON array only.
 tools: []

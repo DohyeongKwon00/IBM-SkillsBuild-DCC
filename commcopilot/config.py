@@ -31,7 +31,7 @@ MAX_SAFETY_RETRIES = 1
 MIN_SAFE_PHRASES = 2
 
 FALLBACK_PHRASES = [
-    "Could you repeat that, please?",
     "Let me think about that for a moment.",
-    "I understand. Thank you.",
+    "I'm not completely sure, but I can check.",
+    "Let me explain that more clearly.",
 ]

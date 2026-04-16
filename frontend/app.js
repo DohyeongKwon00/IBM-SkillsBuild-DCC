@@ -10,6 +10,7 @@
 // Defaults — overridden by session_ready message from server
 let AUTO_DISMISS_MS = 5000;
 let MIN_SPEECH_CONFIDENCE = 0.6;
+const MIN_PHRASE_VISIBLE_MS = 5000;
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000];
 
@@ -18,6 +19,9 @@ let mediaStream = null;
 let recognition = null;
 let reconnectAttempt = 0;
 let dismissTimer = null;
+let replacementTimer = null;
+let phraseShownAt = 0;
+let pendingPhrases = null;
 let isSessionActive = false;
 
 // --- Screens ---
@@ -65,7 +69,9 @@ function connectWebSocket() {
         const msg = JSON.parse(event.data);
 
         if (msg.type === 'session_ready') {
-            if (msg.phrase_auto_dismiss_s) AUTO_DISMISS_MS = msg.phrase_auto_dismiss_s * 1000;
+            if (msg.phrase_auto_dismiss_s) {
+                AUTO_DISMISS_MS = Math.max(MIN_PHRASE_VISIBLE_MS, msg.phrase_auto_dismiss_s * 1000);
+            }
             if (msg.min_speech_confidence) MIN_SPEECH_CONFIDENCE = msg.min_speech_confidence;
             statusIndicator.textContent = 'Listening...';
             startSpeechRecognition();
@@ -162,7 +168,27 @@ function startSpeechRecognition() {
 
 // --- Phrase Display ---
 function showPhrases(phrases) {
+    const elapsed = Date.now() - phraseShownAt;
+    const hasVisiblePhrases = phraseContainer.children.length > 0;
+
+    if (hasVisiblePhrases && elapsed < MIN_PHRASE_VISIBLE_MS) {
+        pendingPhrases = phrases;
+        if (replacementTimer) clearTimeout(replacementTimer);
+        replacementTimer = setTimeout(() => {
+            const nextPhrases = pendingPhrases;
+            pendingPhrases = null;
+            replacementTimer = null;
+            renderPhrases(nextPhrases);
+        }, MIN_PHRASE_VISIBLE_MS - elapsed);
+        return;
+    }
+
+    renderPhrases(phrases);
+}
+
+function renderPhrases(phrases) {
     phraseContainer.innerHTML = '';
+    phraseShownAt = Date.now();
     statusIndicator.textContent = 'Listening...';
     statusIndicator.className = '';
 
@@ -177,11 +203,15 @@ function showPhrases(phrases) {
     if (dismissTimer) clearTimeout(dismissTimer);
     dismissTimer = setTimeout(() => {
         phraseContainer.innerHTML = '';
-    }, AUTO_DISMISS_MS);
+        phraseShownAt = 0;
+    }, Math.max(AUTO_DISMISS_MS, MIN_PHRASE_VISIBLE_MS));
 }
 
 function selectPhrase(phrase) {
     if (dismissTimer) clearTimeout(dismissTimer);
+    if (replacementTimer) clearTimeout(replacementTimer);
+    pendingPhrases = null;
+    phraseShownAt = 0;
     phraseContainer.innerHTML = '';
     selectedPhraseEl.textContent = phrase;
     selectedPhraseEl.style.display = 'block';
@@ -200,6 +230,9 @@ function showRecap(recap, phrasesUsed) {
     statusIndicator.className = '';
     phraseContainer.innerHTML = '';
     if (dismissTimer) clearTimeout(dismissTimer);
+    if (replacementTimer) clearTimeout(replacementTimer);
+    pendingPhrases = null;
+    phraseShownAt = 0;
 
     let html = `<p>${recap}</p>`;
     if (phrasesUsed && phrasesUsed.length > 0) {

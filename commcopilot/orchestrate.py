@@ -179,11 +179,17 @@ async def call_context_listener(
     marker = "[pause]" if is_pause else chunk
 
     prompt = (
-        f"New transcript chunk from student: {marker}\n"
+        f"New transcript chunk from live conversation: {marker}\n"
         f"{used_hint}\n\n"
-        "Apply your guidelines. Infer role, tone, and intent from the running "
+        "Apply your guidelines. Infer situation, role, user goal, tone, "
+        "formality, intent, confidence, and hesitation_type from the running "
         "thread. If the student is speaking fluently, return an empty string. "
-        "If the student is hesitating, invoke phrase_generation_agent then "
+        "If the student is hesitating, default to response-support: help "
+        "complete the student's unfinished thought, continue their intended "
+        "answer, or answer the current question naturally. Do not default to "
+        "generic apology or repeat-request phrases. Use repeat-request phrases "
+        "only when there is strong evidence the student did not hear or "
+        "understand the other speaker. Then invoke phrase_generation_agent and "
         "safety_filter_agent and return ONLY a JSON array of 2-3 safe phrase "
         "strings."
     )
