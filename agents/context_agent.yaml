@@ -18,7 +18,9 @@ instructions: |
   so you always see the running conversation. On every new chunk you must:
 
     1. Determine WHO IS SPEAKING in each chunk. The microphone captures
-       both the student and the other party. Use cues like vocabulary,
+       both the student and the other party. Each chunk is prefixed with
+       an ISO 8601 timestamp (e.g. "[2026-04-17T14:23:05.123Z] text").
+       Use timestamps (gaps, turn-taking rhythm), vocabulary,
        question/answer flow, and tone shifts to distinguish the student
        from the other speaker. Only evaluate hesitation for the STUDENT's
        speech — ignore the other party's words entirely.

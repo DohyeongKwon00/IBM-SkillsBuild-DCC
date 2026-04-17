@@ -116,10 +116,12 @@ async def websocket_endpoint(ws: WebSocket):
                 text = msg.get("text", "").strip()
                 if not text:
                     continue
-                state.transcript_buffer.append(text)
+                ts = msg.get("ts", "")
+                chunk = f"[{ts}] {text}" if ts else text
+                state.transcript_buffer.append(chunk)
                 if len(state.transcript_buffer) > TRANSCRIPT_WINDOW:
                     state.transcript_buffer = state.transcript_buffer[-TRANSCRIPT_WINDOW:]
-                asyncio.create_task(run_listener(text))
+                asyncio.create_task(run_listener(chunk))
 
             elif msg_type == "phrase_selected":
                 phrase = msg.get("phrase", "")

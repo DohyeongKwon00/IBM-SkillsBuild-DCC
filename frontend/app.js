@@ -134,7 +134,11 @@ function startSpeechRecognition() {
 
             if (result.isFinal) {
                 if (confidence < MIN_SPEECH_CONFIDENCE && confidence > 0) continue;
-                sendMessage({ type: 'transcript', text: transcript });
+                sendMessage({
+                    type: 'transcript',
+                    text: transcript,
+                    ts: new Date().toISOString(),
+                });
                 appendFinalTranscript(transcript);
             } else {
                 interim += transcript;
