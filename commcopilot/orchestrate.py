@@ -1,19 +1,17 @@
-"""IBM watsonx Orchestrate interface for CommCopilot (listener mode).
+"""IBM watsonx Orchestrate interface for CommCopilot.
 
 Authentication flow:
   IAM API key -> POST iam.cloud.ibm.com/identity/token -> access_token (1h TTL)
   access_token used as Bearer in every Orchestrate API call
 
 Call path:
-  call_context_listener()  -- POSTs a silent STT chunk to ContextAgent, which
-                              accumulates conversation context via thread_id.
-                              ContextAgent's guidelines decide whether to stay
-                              silent or invoke PhraseAgent+SafetyAgent
-                              collaborators and return phrases.
+  call_context_listener()  -- POSTs each STT chunk to ContextAgent via thread_id.
+                              ContextAgent decides whether to stay silent or
+                              return 2-3 phrase suggestions.
 
 API endpoint (IBM Cloud SaaS):
   POST {ORCHESTRATE_URL}/v1/orchestrate/{agent_id}/chat/completions
-  Header X-IBM-THREAD-ID: <uuid>      (keeps the conversation thread alive)
+  Header X-IBM-THREAD-ID: <uuid>
   Response: OpenAI-compatible {"choices": [{"message": {"content": "..."}}]}
 """
 
@@ -39,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 _FENCE_RE = re.compile(r"^```[a-z]*\n?", re.MULTILINE)
 
-# IAM token cache: (token_str, expires_at_epoch)
 _iam_token_cache: tuple[str, float] = ("", 0.0)
 
 
@@ -69,7 +66,6 @@ def _strip_fences(raw: str) -> str:
 
 
 async def _get_iam_token() -> str:
-    """Exchange IAM API key for an access token. Cached until 5 min before expiry."""
     global _iam_token_cache
     token, expires_at = _iam_token_cache
 
@@ -99,11 +95,6 @@ async def _chat(
     thread_id: Optional[str] = None,
     warmup: bool = False,
 ) -> str:
-    """POST a message to one Orchestrate agent and return the response text.
-
-    When `thread_id` is provided it is sent as the X-IBM-THREAD-ID header so
-    the agent accumulates conversation history across successive calls.
-    """
     if not ORCHESTRATE_URL:
         raise OrchestrateError("ORCHESTRATE_URL is not configured")
     if not agent_id:
@@ -140,14 +131,9 @@ async def _chat(
 
 
 def _is_silent_response(raw: str) -> bool:
-    """ContextAgent guideline 1 says 'return empty' when the student is fluent.
-
-    Treat empty, whitespace-only, and one-word acknowledgements as silent.
-    """
     text = (raw or "").strip().strip("`").strip()
     if not text:
         return True
-    # Sometimes the LLM still emits a single filler token like "ok" / "."
     if len(text) <= 2:
         return True
     return False
@@ -157,18 +143,11 @@ async def call_context_listener(
     chunk: str,
     thread_id: str,
     phrases_used: list[str],
-    is_pause: bool = False,
     on_event: EventCallback = None,
 ) -> Optional[list[str]]:
-    """Send one STT chunk to ContextAgent as a silent listener message.
+    """Send one STT chunk to ContextAgent.
 
-    ContextAgent infers role/tone/intent from the running thread itself — no
-    scenario context is provided by the server.
-
-    Returns:
-        - list[str] of 2-3 safe phrases if ContextAgent's "hesitation" guideline
-          fires and it runs the Phrase/Safety collaborators.
-        - None if ContextAgent decides to stay silent (no hesitation).
+    Returns list[str] of 2-3 phrases if hesitation detected, None otherwise.
     """
     used_hint = (
         f"Phrases the student already used (avoid suggesting these again): "
@@ -176,10 +155,9 @@ async def call_context_listener(
         if phrases_used
         else ""
     )
-    marker = "[pause]" if is_pause else chunk
 
     prompt = (
-        f"New transcript chunk from student: {marker}\n"
+        f"New transcript chunk from student: {chunk}\n"
         f"{used_hint}\n\n"
         "Apply your guidelines. Infer role, tone, and intent from the running "
         "thread. If the student is speaking fluently, return an empty string. "
@@ -191,7 +169,6 @@ async def call_context_listener(
     await _emit(on_event, {
         "stage": "context_agent",
         "status": "calling",
-        "detail": "listener chunk" + (" [pause]" if is_pause else ""),
         "prompt": prompt,
     })
 
@@ -231,7 +208,6 @@ async def call_context_listener(
 
 
 async def warmup() -> None:
-    """Pre-fetch the IAM token so the first real call doesn't pay for it."""
     if not ORCHESTRATE_URL or not ORCHESTRATE_API_KEY:
         return
     try:

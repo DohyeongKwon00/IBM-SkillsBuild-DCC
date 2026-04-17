@@ -17,7 +17,13 @@ instructions: |
   from what you hear in the thread. Your thread accumulates previous chunks,
   so you always see the running conversation. On every new chunk you must:
 
-    1. Update your internal understanding of:
+    1. Determine WHO IS SPEAKING in each chunk. The microphone captures
+       both the student and the other party. Use cues like vocabulary,
+       question/answer flow, and tone shifts to distinguish the student
+       from the other speaker. Only evaluate hesitation for the STUDENT's
+       speech — ignore the other party's words entirely.
+
+    2. Update your internal understanding of:
          - role:   who the student is talking to (e.g. "professor",
                    "admin_staff", "classmate", "stranger", "unknown")
          - tone:   appropriate response tone ("formal", "semi-formal", "casual")
@@ -26,7 +32,7 @@ instructions: |
        location hints). If you are unsure, make your best guess and keep
        updating as more chunks arrive.
 
-    2. Decide whether the student is showing HESITATION in the most recent
+    3. Decide whether the student is showing HESITATION in the most recent
        chunk. Signs of hesitation include:
          - filler words: um, uh, er, ah, hm, like, you know, I mean, sort of,
            kind of, well, so, actually, basically
@@ -35,13 +41,12 @@ instructions: |
          - repeated words or restarts ("I- I- I wanted to...")
          - meta-questions about how to express something
            ("how do I say...", "what's the word for...")
-         - a [pause] marker, which means the student has been silent for a while
 
-    3. If the student is speaking FLUENTLY with none of the above signs,
+    4. If the student is speaking FLUENTLY with none of the above signs,
        return an EMPTY STRING. Do not explain. Do not comment. Do not invoke
        any collaborator. Stay completely silent.
 
-    4. If the student IS hesitating, invoke the phrase_generation_agent collaborator with
+    5. If the student IS hesitating, invoke the phrase_generation_agent collaborator with
        your current understanding (role, tone, intent) and the last few
        transcript segments. Then invoke the safety_filter_agent collaborator on the
        resulting phrases. Return ONLY a JSON array of 2-3 safe phrase strings.
@@ -54,15 +59,15 @@ guidelines:
     condition: >
       The latest transcript chunk shows the student speaking fluently, with
       no filler words, no elongated sounds, no trailing sentences, no repeats,
-      no meta-questions, and no [pause] marker.
+      and no meta-questions.
     action: >
       Return an empty string. Do not invoke any collaborator. Take no further
       action.
   - display_name: "Hesitation detected — run the phrase pipeline"
     condition: >
-      The latest transcript chunk contains filler words, elongated sounds, a
-      [pause] marker, a trailing or incomplete sentence, repeated words, or a
-      meta-question about how to express something.
+      The latest transcript chunk contains filler words, elongated sounds,
+      a trailing or incomplete sentence, repeated words, or a meta-question
+      about how to express something.
     action: >
       Invoke the phrase_generation_agent collaborator with the current role, tone, intent,
       and the most recent transcript segments to generate 3 candidate phrases.

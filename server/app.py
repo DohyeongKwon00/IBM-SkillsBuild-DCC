@@ -1,20 +1,15 @@
-"""FastAPI application with WebSocket endpoint for CommCopilot (listener mode).
+"""FastAPI application with WebSocket endpoint for CommCopilot.
 
-In listener mode the browser no longer decides when to trigger — it only
-transcribes speech and streams final STT chunks to the server. The server
-forwards each chunk as a silent message to ContextAgent, which decides on its
-own whether to stay silent or fire the phrase pipeline.
-
-A background heartbeat injects a "[pause]" marker chunk when the student has
-been silent for longer than HESITATION_PAUSE_MS, so prolonged silence is also
-visible to the listener agent.
+The browser transcribes speech via Web Speech API and streams each final
+transcript chunk to the server over a WebSocket. The server forwards every
+chunk to a single ContextAgent on IBM watsonx Orchestrate, which decides
+whether the student is hesitating and, if so, returns phrase suggestions.
 """
 
 import asyncio
 import json
 import logging
 import time
-import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -22,8 +17,6 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from commcopilot.config import (
-    HESITATION_COOLDOWN_S,
-    HESITATION_PAUSE_MS,
     MIN_SPEECH_CONFIDENCE,
     PHRASE_AUTO_DISMISS_S,
     SESSION_TIMEOUT_S,
@@ -79,26 +72,16 @@ async def websocket_endpoint(ws: WebSocket):
     async def emit_log(event: dict) -> None:
         await send({"type": "log", **event})
 
-    async def run_listener(chunk: str, is_pause: bool) -> None:
-        """Send one chunk to ContextAgent; push phrases to client if returned."""
+    async def run_listener(chunk: str) -> None:
         if state.awaiting_phrases:
             return
         state.awaiting_phrases = True
         try:
-            if is_pause:
-                await send({
-                    "type": "log",
-                    "stage": "listener",
-                    "status": "pause_heartbeat",
-                    "detail": "injecting [pause] marker",
-                })
             await send({"type": "thinking"})
-
             phrases = await call_context_listener(
                 chunk=chunk,
                 thread_id=state.thread_id,
                 phrases_used=list(state.phrases_used),
-                is_pause=is_pause,
                 on_event=emit_log,
             )
         except Exception as e:
@@ -113,24 +96,7 @@ async def websocket_endpoint(ws: WebSocket):
         else:
             await send({"type": "idle"})
 
-    async def pause_heartbeat() -> None:
-        """If student is silent for HESITATION_PAUSE_MS, let ContextAgent know."""
-        pause_seconds = HESITATION_PAUSE_MS / 1000.0
-        while True:
-            await asyncio.sleep(pause_seconds)
-            if state.awaiting_phrases:
-                continue
-            idle_for = time.monotonic() - state.last_transcript_at
-            if idle_for >= pause_seconds:
-                # Reset the clock so we don't fire again on the next tick.
-                state.last_transcript_at = time.monotonic()
-                asyncio.create_task(run_listener("[pause]", is_pause=True))
-
-    heartbeat_task: asyncio.Task | None = None
-
     try:
-        # Wait for the client's start signal (or any first message) before
-        # kicking off the session; ignore its content — no scenario to read.
         await ws.receive_text()
 
         asyncio.create_task(orchestrate_warmup())
@@ -139,11 +105,7 @@ async def websocket_endpoint(ws: WebSocket):
             "type": "session_ready",
             "phrase_auto_dismiss_s": PHRASE_AUTO_DISMISS_S,
             "min_speech_confidence": MIN_SPEECH_CONFIDENCE,
-            "hesitation_cooldown_s": HESITATION_COOLDOWN_S,
-            "hesitation_pause_ms": HESITATION_PAUSE_MS,
         })
-        state.last_transcript_at = time.monotonic()
-        heartbeat_task = asyncio.create_task(pause_heartbeat())
 
         while True:
             raw = await ws.receive_text()
@@ -157,8 +119,7 @@ async def websocket_endpoint(ws: WebSocket):
                 state.transcript_buffer.append(text)
                 if len(state.transcript_buffer) > TRANSCRIPT_WINDOW:
                     state.transcript_buffer = state.transcript_buffer[-TRANSCRIPT_WINDOW:]
-                state.last_transcript_at = time.monotonic()
-                asyncio.create_task(run_listener(text, is_pause=False))
+                asyncio.create_task(run_listener(text))
 
             elif msg_type == "phrase_selected":
                 phrase = msg.get("phrase", "")
@@ -184,8 +145,6 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception as e:
         logger.error("WebSocket error (%s): %s", state.session_id, e)
     finally:
-        if heartbeat_task:
-            heartbeat_task.cancel()
         sessions.pop(state.session_id, None)
 
 

@@ -86,7 +86,7 @@ async def test_listener_parse_failure_returns_none():
 
 
 @pytest.mark.asyncio
-async def test_listener_passes_pause_marker():
+async def test_listener_passes_thread_id():
     captured = {}
 
     async def mock_chat(agent_id, prompt, thread_id=None, warmup=False):
@@ -96,10 +96,9 @@ async def test_listener_passes_pause_marker():
 
     with _mock_iam, patch("commcopilot.orchestrate._chat", side_effect=mock_chat):
         await call_context_listener(
-            chunk="ignored",
+            chunk="hello professor",
             thread_id="tid-42",
             phrases_used=[],
-            is_pause=True,
         )
-    assert "[pause]" in captured["prompt"]
+    assert "hello professor" in captured["prompt"]
     assert captured["thread_id"] == "tid-42"

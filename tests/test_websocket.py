@@ -27,7 +27,6 @@ def test_session_ready_after_start(client):
         assert msg["type"] == "session_ready"
         assert "phrase_auto_dismiss_s" in msg
         assert "min_speech_confidence" in msg
-        assert "hesitation_pause_ms" in msg
 
 
 def _drain_until(ws, wanted_type, max_msgs=20):

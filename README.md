@@ -1,6 +1,6 @@
 # CommCopilot
 
-Real-time AI conversation assistant for international students. CommCopilot listens to a live English conversation through the browser microphone, streams each transcript chunk to a silent agent on IBM watsonx Orchestrate, and surfaces short phrase suggestions only when the agent detects that the student is hesitating.
+Real-time AI conversation assistant for international students. CommCopilot listens to a live English conversation through the browser microphone, streams each transcript chunk to a single ContextAgent on IBM watsonx Orchestrate, and surfaces short phrase suggestions only when the agent detects that the student is hesitating.
 
 Built as part of the **IBM SkillsBuild AI Experiential Learning Lab**.
 
@@ -9,61 +9,56 @@ Built as part of the **IBM SkillsBuild AI Experiential Learning Lab**.
 ```
 Microphone → Web Speech API → WebSocket → ContextAgent (silent listener)
                                               │
-                                              ├── fluent  → stay silent
-                                              └── hesitating → phrase_generation_agent
-                                                               → safety_filter_agent
-                                                               → phrase suggestions
+                                              ├── fluent  → stay silent (empty string)
+                                              └── hesitating → phrase_generation_agent (tool)
+                                                               → safety_filter_agent (tool)
+                                                               → JSON array of phrases → UI
 ```
 
-1. **Speech-to-Text** — Chrome's Web Speech API transcribes the conversation in the browser (interim + final results). The browser does **not** run any hesitation logic — no filler regex, no prosody analysis, no pause timer. It just forwards each final STT chunk to the server.
-2. **Listener Agent** — The server POSTs every chunk to **ContextAgent** on Orchestrate as a silent message, tagged with a per-session `X-IBM-THREAD-ID` so the agent sees the running conversation. ContextAgent:
+1. **Speech-to-Text** — Chrome's Web Speech API transcribes the conversation in the browser (interim + final results). The browser does **not** run any hesitation or filtering logic. It just forwards each final STT chunk to the server.
+2. **ContextAgent** — The server POSTs every chunk to a single **ContextAgent** on Orchestrate as a silent message, tagged with a per-session `X-IBM-THREAD-ID` so the agent sees the running conversation. ContextAgent:
+   - distinguishes **who is speaking** (student vs. the other party) from the thread context,
    - infers **role / tone / intent** from the thread itself (no scenario is provided),
-   - decides per chunk whether the student is hesitating (filler words, elongated sounds, trailing sentences, meta-questions, or a `[pause]` marker),
+   - decides per chunk whether the student is hesitating (filler words, elongated sounds, trailing sentences, repeated words, meta-questions),
    - returns an **empty string** when the student is fluent — the client sees nothing,
-   - or invokes **`phrase_generation_agent`** and **`safety_filter_agent`** as collaborators and returns a JSON array of 2–3 safe phrases.
-3. **Pause heartbeat** — A background task on the server injects a `[pause]` marker chunk into the same thread when the student has been silent for longer than `HESITATION_PAUSE_MS` (default 3000 ms), so prolonged silence is visible to ContextAgent even without any new STT output.
+   - or uses **`phrase_generation_agent`** and **`safety_filter_agent`** (configured as tools in the Orchestrate web UI) to produce and return a JSON array of 2–3 safe phrases.
 
-All hesitation detection lives on the agent side. The browser is dumb by design.
-
-## UI Features
-
-The session screen surfaces everything happening end-to-end so the agent flow is transparent:
-
-- **Start screen** — one button. No scenario picker; ContextAgent infers context from what it hears.
-- **Phrase Cards** — clickable suggested phrases, auto-dismiss after 5 s.
-- **Live Transcript** — STT results render as you speak: finalized text in black, interim (not-yet-final) text in italic grey.
-- **Pipeline Log** — a dark log panel that streams each listener event in real time, timestamped and color-coded per stage:
-  - `[listener]` — `pause_heartbeat` when a `[pause]` marker is injected
-  - `[context_agent]` — `calling` → `responded` (raw prompt + full model output) → `silent` / `parse_failed` / `parsed` (final phrases)
-- **Inline recap** — pressing *End Session* does **not** navigate away. The recap (hesitation count + phrases used) appears as an inline banner while the Live Transcript and Pipeline Log stay on screen so you can review the full run afterwards. *New Session* reloads the page.
-
-Log events are pushed over the same WebSocket as phrase suggestions — see `on_event` in `commcopilot/orchestrate.py` and the `emit_log` closure in `server/app.py`.
+All hesitation detection, phrase generation, and safety filtering happen on the agent side. The browser is a dumb STT pipe by design.
 
 ## Tech Stack
 
 - **Backend**: FastAPI + WebSocket (`httpx` async client)
-- **Agent Orchestration**: IBM watsonx Orchestrate — IBM Cloud SaaS REST API
-  (`POST {ORCHESTRATE_URL}/v1/orchestrate/{agent_id}/chat/completions`, OpenAI-compatible payload, `X-IBM-THREAD-ID` for thread persistence)
-- **Auth**: IBM Cloud IAM — API key exchanged for a Bearer access token (cached 1h)
+- **Agent Orchestration**: IBM watsonx Orchestrate
+- **Auth**: IBM Cloud IAM 
 - **LLM**: IBM watsonx (via Orchestrate agents)
 - **Speech-to-Text**: Browser Web Speech API (Chrome)
-- **Frontend**: HTML/CSS/JS (no framework)
+- **Frontend**: HTML/CSS/JS
+
+## Agents
+
+Only **ContextAgent** is called from the server. The other two agents are configured as tools of ContextAgent inside the Orchestrate web UI — they are not called directly by this codebase.
+
+| Agent | Where defined | Role |
+|---|---|---|
+| **ContextAgent** | Orchestrate | Silent listener. Distinguishes student from the other speaker, detects hesitation, invokes the other two agents as tools, returns phrases or empty. |
+| **phrase_generation_agent** | Orchestrate | Generates 3 candidate phrases given role/tone/intent context. Called by ContextAgent as a tool. |
+| **safety_filter_agent** | Orchestrate | Screens candidate phrases for appropriateness. Called by ContextAgent as a tool. |
 
 ## Project Structure
 
 ```
-├── agents/                    # IBM Orchestrate ADK agent definitions
-│   └── context_agent.yaml     # Silent listener; collaborators: phrase_generation_agent, safety_filter_agent
-├── commcopilot/               # Core backend package
+├── agents/
+│   └── context_agent.yaml     # ContextAgent definition (tools: phrase_generation_agent, safety_filter_agent)
+├── commcopilot/
 │   ├── config.py              # Environment variables and thresholds
-│   ├── session.py             # In-memory session state (session_id + thread_id + last_transcript_at)
+│   ├── session.py             # In-memory session state (session_id + thread_id)
 │   └── orchestrate.py         # Orchestrate API client (IAM auth + call_context_listener)
 ├── server/
-│   └── app.py                 # FastAPI WebSocket endpoint + pause heartbeat
+│   └── app.py                 # FastAPI WebSocket endpoint
 ├── frontend/
 │   ├── index.html
 │   ├── style.css
-│   └── app.js                 # Web Speech API STT + WebSocket + log/transcript rendering
+│   └── app.js                 # Web Speech API STT + WebSocket + phrase/log rendering
 ├── tests/
 │   ├── conftest.py
 │   ├── test_session.py
@@ -72,8 +67,6 @@ Log events are pushed over the same WebSocket as phrase suggestions — see `on_
 ├── requirements.txt
 └── .env.example
 ```
-
-`phrase_generation_agent` and `safety_filter_agent` are managed in the Orchestrate web UI and invoked as collaborators by ContextAgent — they are not defined in this repo.
 
 ---
 
@@ -84,7 +77,7 @@ Log events are pushed over the same WebSocket as phrase suggestions — see `on_
 - Python 3.11–3.13 (3.14 is not supported by `ibm-watsonx-orchestrate`)
 - Google Chrome (Web Speech API required for STT)
 - IBM Cloud account with watsonx Orchestrate instance
-- `phrase_generation_agent` and `safety_filter_agent` already created in your Orchestrate tenant
+- `phrase_generation_agent` and `safety_filter_agent` already created in your Orchestrate tenant and configured as tools of ContextAgent
 
 ### 1. Install Python 3.13
 
@@ -131,8 +124,8 @@ cp .env.example .env
 ORCHESTRATE_URL=https://api.eu-gb.watson-orchestrate.cloud.ibm.com/instances/<your-instance-id>
 ORCHESTRATE_API_KEY=<your-ibm-cloud-api-key>
 
-# ContextAgent is the only agent called from the server; it invokes
-# phrase_generation_agent + safety_filter_agent as collaborators.
+# ContextAgent ID — the only agent called from the server.
+# phrase_generation_agent + safety_filter_agent are its tools in Orchestrate.
 CONTEXT_AGENT_ID=
 ```
 
@@ -152,12 +145,12 @@ orchestrate env activate commcopilot-prod
 # Enter your IBM Cloud API key when prompted
 ```
 
-**2. Make sure the collaborators already exist:**
+**2. Make sure the tool agents already exist:**
 ```bash
 orchestrate agents list
 ```
 
-You must see both `phrase_generation_agent` and `safety_filter_agent` in the output. Their **exact names** (including any `_XXXXMS` suffix ADK may have attached) must match the `collaborators:` entries in `agents/context_agent.yaml`. If the suffixes differ, edit the yaml before importing.
+You must see both `phrase_generation_agent` and `safety_filter_agent` in the output. They should already be configured as tools of ContextAgent in the Orchestrate web UI.
 
 **3. Import ContextAgent:**
 ```bash
@@ -193,7 +186,7 @@ Open [http://localhost:8000](http://localhost:8000) in **Chrome** and press *Sta
 pytest
 ```
 
-Unit tests cover session state, `call_context_listener` (silent / phrases / fenced JSON / pause marker), and WebSocket behavior (`transcript → thinking → phrases` vs `transcript → thinking → idle`). All IBM service calls are mocked.
+Unit tests cover session state, `call_context_listener` (silent / phrases / fenced JSON), and WebSocket behavior (`transcript → thinking → phrases` vs `transcript → thinking → idle`). All IBM service calls are mocked.
 
 > Note: the REST endpoint used by `commcopilot/orchestrate.py` is the IBM Cloud SaaS path
 > `/v1/orchestrate/{agent_id}/chat/completions` (no `/api` prefix). The ADK next-gen spec uses
@@ -215,9 +208,8 @@ Thresholds live in `commcopilot/config.py`:
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `HESITATION_PAUSE_MS` | `3000` | Server-side idle time before injecting a `[pause]` marker into the listener thread |
 | `PHRASE_AUTO_DISMISS_S` | `5` | How long phrase cards stay visible on the client |
-| `ORCHESTRATE_TIMEOUT_S` | `15.0` | Per-call timeout — ContextAgent may chain phrase_generation_agent + safety_filter_agent internally, so keep headroom |
+| `ORCHESTRATE_TIMEOUT_S` | `15.0` | Per-call timeout — ContextAgent may invoke phrase_generation_agent + safety_filter_agent as tools |
 | `MIN_SPEECH_CONFIDENCE` | `0.6` | Minimum Web Speech API confidence to forward a final transcript |
 | `TRANSCRIPT_WINDOW` | `10` | Sliding window of recent transcript segments kept in session state |
 | `SESSION_TIMEOUT_S` | `1800` | Evict sessions idle longer than this (30 min) |
