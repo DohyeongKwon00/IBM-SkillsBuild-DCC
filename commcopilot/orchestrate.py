@@ -25,11 +25,13 @@ import httpx
 
 from commcopilot.config import (
     CONTEXT_AGENT_ID,
+    DIARIZATION_AGENT_ID,
     FALLBACK_PHRASES,
     ORCHESTRATE_API_KEY,
     ORCHESTRATE_TIMEOUT_S,
     ORCHESTRATE_URL,
 )
+from commcopilot.diarization import LabeledChunk
 
 EventCallback = Optional[Callable[[dict], Awaitable[None]]]
 
@@ -141,11 +143,11 @@ def _is_silent_response(raw: str) -> bool:
 
 async def call_context_listener(
     chunk: str,
-    thread_id: str,
+    recent_context: list[str],
     phrases_used: list[str],
     on_event: EventCallback = None,
 ) -> Optional[list[str]]:
-    """Send one STT chunk to ContextAgent.
+    """Send one labeled chunk to ContextAgent with recent conversation context.
 
     Returns list[str] of 2-3 phrases if hesitation detected, None otherwise.
     """
@@ -155,16 +157,10 @@ async def call_context_listener(
         if phrases_used
         else ""
     )
-
-    prompt = (
-        f"New transcript chunk from student: {chunk}\n"
-        f"{used_hint}\n\n"
-        "Apply your guidelines. Infer role, tone, and intent from the running "
-        "thread. If the student is speaking fluently, return an empty string. "
-        "If the student is hesitating, invoke phrase_generation_agent then "
-        "safety_filter_agent and return ONLY a JSON array of 2-3 safe phrase "
-        "strings."
-    )
+    context_lines = "\n".join(recent_context[-8:])
+    prompt = f"{context_lines}\n{chunk}" if context_lines else chunk
+    if used_hint:
+        prompt += f"\n({used_hint})"
 
     await _emit(on_event, {
         "stage": "context_agent",
@@ -173,7 +169,7 @@ async def call_context_listener(
     })
 
     try:
-        raw = await _chat(CONTEXT_AGENT_ID, prompt, thread_id=thread_id)
+        raw = await _chat(CONTEXT_AGENT_ID, prompt)
     except OrchestrateTimeoutError:
         await _emit(on_event, {"stage": "context_agent", "status": "timeout"})
         return None
@@ -205,6 +201,95 @@ async def call_context_listener(
 
     await _emit(on_event, {"stage": "context_agent", "status": "unexpected_shape"})
     return None
+
+
+_ALLOWED_LABELS = ("student", "other")
+
+
+def _parse_diarization_labels(raw: str, expected_len: int) -> Optional[list[str]]:
+    """Parse DiarizationAgent output into a list of speaker labels.
+
+    Expected response: JSON array of strings, e.g. ["student", "other", ...].
+    Returns None on any parse failure or if no valid labels found.
+    """
+    stripped = _strip_fences(raw or "")
+    if not stripped:
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    labels = [str(x).strip().lower() for x in parsed]
+    labels = [x for x in labels if x in _ALLOWED_LABELS]
+    if not labels:
+        return None
+    return labels[:expected_len]
+
+
+def _format_window(window: list[LabeledChunk]) -> str:
+    lines = []
+    for i, chunk in enumerate(window):
+        ts_prefix = f"[{chunk.ts}] " if chunk.ts else ""
+        lines.append(f"[{i}] {ts_prefix}{chunk.text}")
+    return "\n".join(lines)
+
+
+async def call_diarization_agent(
+    window: list[LabeledChunk],
+    thread_id: str,
+    on_event: EventCallback = None,
+) -> Optional[list[str]]:
+    """Classify every sentence in `window` as 'student' or 'other'.
+
+    Returns a list of labels aligned with `window`, or None on failure.
+    A None return means the caller should not record votes for this round —
+    the next DiarizationAgent call will still contribute votes to any chunk
+    that remains in the window.
+    """
+    if not window:
+        return None
+
+    formatted = _format_window(window)
+    prompt = (
+        "Classify every sentence below as 'student' (the international student) "
+        "or 'other' (their conversation partner) in a 2-speaker dialogue.\n\n"
+        f"{formatted}\n\n"
+        f"Return ONLY a JSON array of {len(window)} labels in order, e.g. "
+        '["student", "other", ...]. No markdown, no commentary.'
+    )
+
+    await _emit(on_event, {
+        "stage": "diarization_agent",
+        "status": "calling",
+        "prompt": prompt,
+    })
+
+    try:
+        raw = await _chat(DIARIZATION_AGENT_ID, prompt, thread_id=thread_id)
+    except OrchestrateTimeoutError:
+        await _emit(on_event, {"stage": "diarization_agent", "status": "timeout"})
+        return None
+    except OrchestrateError as e:
+        await _emit(on_event, {"stage": "diarization_agent", "status": "error", "detail": str(e)})
+        return None
+
+    labels = _parse_diarization_labels(raw, expected_len=len(window))
+    if labels is None:
+        await _emit(on_event, {
+            "stage": "diarization_agent",
+            "status": "parse_failed",
+            "output": raw,
+        })
+        return None
+
+    await _emit(on_event, {
+        "stage": "diarization_agent",
+        "status": "parsed",
+        "labels": labels,
+    })
+    return labels
 
 
 async def warmup() -> None:

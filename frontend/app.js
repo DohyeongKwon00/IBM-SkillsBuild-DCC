@@ -275,6 +275,7 @@ function appendLog(msg) {
     addBlock('prompt', msg.prompt);
     addBlock('output', msg.output);
     addBlock('parsed', msg.phrases);
+    addBlock('labels', msg.labels);
 
     logPanelEl.appendChild(entry);
     logPanelEl.scrollTop = logPanelEl.scrollHeight;

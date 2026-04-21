@@ -1,9 +1,10 @@
 """Tests for SessionState in commcopilot/session.py."""
 
 import time
-import pytest
+
+from commcopilot.config import MPM_TIE_BREAK_LABEL, MPM_WINDOW_SIZE, TRANSCRIPT_WINDOW
+from commcopilot.diarization import SlidingWindowAggregator
 from commcopilot.session import SessionState
-from commcopilot.config import TRANSCRIPT_WINDOW
 
 
 def test_session_defaults():
@@ -16,6 +17,26 @@ def test_session_defaults():
     assert state.created_at <= time.monotonic()
 
 
+def test_threads_are_split_and_unique():
+    state = SessionState()
+    assert state.context_thread_id != ""
+    assert state.diarization_thread_id != ""
+    assert state.context_thread_id != state.diarization_thread_id
+
+
+def test_aggregator_configured_from_settings():
+    state = SessionState()
+    assert isinstance(state.aggregator, SlidingWindowAggregator)
+    assert state.aggregator.window_size == MPM_WINDOW_SIZE
+    assert state.aggregator.tie_break_label == MPM_TIE_BREAK_LABEL
+
+
+def test_each_session_gets_its_own_aggregator():
+    s1 = SessionState()
+    s2 = SessionState()
+    assert s1.aggregator is not s2.aggregator
+
+
 def test_transcript_buffer_sliding_window():
     """Sliding window should keep only the last TRANSCRIPT_WINDOW segments."""
     state = SessionState()
@@ -25,7 +46,6 @@ def test_transcript_buffer_sliding_window():
             state.transcript_buffer = state.transcript_buffer[-TRANSCRIPT_WINDOW:]
 
     assert len(state.transcript_buffer) == TRANSCRIPT_WINDOW
-    # Oldest retained segment is segment 5 (0-indexed)
     assert state.transcript_buffer[0] == f"segment {5}"
 
 
