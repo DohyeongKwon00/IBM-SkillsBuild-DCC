@@ -156,14 +156,18 @@ async def call_context_listener(
         else ""
     )
 
+    # Speaker labels are provided by Watson STT.
+    # ContextAgent identifies the student speaker from the conversation thread
+    # and user profile already in context.
     prompt = (
-        f"New transcript chunk from student: {chunk}\n"
+        f"New transcript chunk: {chunk}\n"
+        f"Note: speaker labels come from Watson STT — [Speaker 0] and [Speaker 1] "
+        f"are the two participants. Use your knowledge of the user (student) "
+        f"already in context to determine which speaker ID is the student.\n"
         f"{used_hint}\n\n"
-        "Apply your guidelines. Infer role, tone, and intent from the running "
-        "thread. If the student is speaking fluently, return an empty string. "
+        "Apply your guidelines. If the student is speaking fluently, return an empty string. "
         "If the student is hesitating, invoke phrase_generation_agent then "
-        "safety_filter_agent and return ONLY a JSON array of 2-3 safe phrase "
-        "strings."
+        "safety_filter_agent and return ONLY a JSON array of 2-3 safe phrase strings."
     )
 
     await _emit(on_event, {
