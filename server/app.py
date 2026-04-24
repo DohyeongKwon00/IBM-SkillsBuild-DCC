@@ -1,9 +1,11 @@
 """FastAPI application with WebSocket endpoint for CommCopilot.
 
-The browser transcribes speech via Web Speech API and streams each final
-transcript chunk to the server over a WebSocket. The server forwards every
-chunk to a single ContextAgent on IBM watsonx Orchestrate, which decides
-whether the student is hesitating and, if so, returns phrase suggestions.
+Audio flow:
+    Browser captures mic audio via MediaRecorder (webm/opus, 250ms chunks).
+    Binary frames arrive over WebSocket and are forwarded to Watson STT.
+    Watson STT returns speaker-labeled transcripts, e.g. "[Speaker 0]: I was wondering..."
+    Each final transcript is forwarded to ContextAgent (via Orchestrate), which
+    detects hesitation and returns phrase suggestions when the student is struggling.
 """
 
 import asyncio
@@ -17,13 +19,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from commcopilot.config import (
-    MIN_SPEECH_CONFIDENCE,
+    ASSEMBLYAI_API_KEY,
     PHRASE_AUTO_DISMISS_S,
     SESSION_TIMEOUT_S,
     TRANSCRIPT_WINDOW,
 )
 from commcopilot.orchestrate import call_context_listener, warmup as orchestrate_warmup
 from commcopilot.session import SessionState
+from commcopilot.assemblyai_stt import AssemblyAISTTClient
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -67,10 +70,21 @@ async def websocket_endpoint(ws: WebSocket):
     logger.info("Session started: %s (thread_id=%s)", state.session_id, state.thread_id)
 
     async def send(msg: dict) -> None:
-        await ws.send_text(json.dumps(msg))
+        try:
+            await ws.send_text(json.dumps(msg))
+        except Exception:
+            pass
 
     async def emit_log(event: dict) -> None:
         await send({"type": "log", **event})
+
+    async def on_transcript(chunk: str) -> None:
+        """Called by AssemblyAISTTClient when a speaker-labeled transcript is ready."""
+        state.transcript_buffer.append(chunk)
+        if len(state.transcript_buffer) > TRANSCRIPT_WINDOW:
+            state.transcript_buffer = state.transcript_buffer[-TRANSCRIPT_WINDOW:]
+        await send({"type": "transcript", "text": chunk})
+        asyncio.create_task(run_listener(chunk))
 
     async def run_listener(chunk: str) -> None:
         if state.awaiting_phrases:
@@ -96,57 +110,69 @@ async def websocket_endpoint(ws: WebSocket):
         else:
             await send({"type": "idle"})
 
+    stt: AssemblyAISTTClient | None = None
+
     try:
+        # Wait for the browser's initial "start" message.
         await ws.receive_text()
 
         asyncio.create_task(orchestrate_warmup())
 
+        if not ASSEMBLYAI_API_KEY:
+            await send({"type": "error", "message": "AssemblyAI API key is not configured on the server."})
+            return
+
+        stt = AssemblyAISTTClient(on_transcript=on_transcript)
+        try:
+            await stt.connect()
+        except Exception as e:
+            logger.error("AssemblyAI STT connect failed: %s", e)
+            await send({"type": "error", "message": f"Could not connect to AssemblyAI STT: {e}"})
+            return
+
         await send({
             "type": "session_ready",
             "phrase_auto_dismiss_s": PHRASE_AUTO_DISMISS_S,
-            "min_speech_confidence": MIN_SPEECH_CONFIDENCE,
         })
 
         while True:
-            raw = await ws.receive_text()
-            msg = json.loads(raw)
-            msg_type = msg.get("type")
+            # Receive either binary audio frames or text control messages.
+            data = await ws.receive()
 
-            if msg_type == "transcript":
-                text = msg.get("text", "").strip()
-                if not text:
-                    continue
-                ts = msg.get("ts", "")
-                chunk = f"[{ts}] {text}" if ts else text
-                state.transcript_buffer.append(chunk)
-                if len(state.transcript_buffer) > TRANSCRIPT_WINDOW:
-                    state.transcript_buffer = state.transcript_buffer[-TRANSCRIPT_WINDOW:]
-                asyncio.create_task(run_listener(chunk))
+            if data.get("bytes"):
+                # Binary PCM16 frame from browser AudioContext -> AssemblyAI.
+                await stt.send_audio(data["bytes"])
 
-            elif msg_type == "phrase_selected":
-                phrase = msg.get("phrase", "")
-                if phrase:
-                    state.phrases_used.append(phrase)
-                    logger.info("Phrase selected: %s", phrase)
+            elif data.get("text"):
+                msg = json.loads(data["text"])
+                msg_type = msg.get("type")
 
-            elif msg_type == "end_session":
-                logger.info("Session ending: %s", state.session_id)
-                recap = (
-                    f"Session complete. You hesitated {state.hesitation_count} time(s) "
-                    f"and used {len(state.phrases_used)} suggested phrase(s)."
-                )
-                await send({
-                    "type": "recap",
-                    "recap": recap,
-                    "phrases_used": state.phrases_used,
-                })
-                break
+                if msg_type == "phrase_selected":
+                    phrase = msg.get("phrase", "")
+                    if phrase:
+                        state.phrases_used.append(phrase)
+                        logger.info("Phrase selected: %s", phrase)
+
+                elif msg_type == "end_session":
+                    logger.info("Session ending: %s", state.session_id)
+                    recap = (
+                        f"Session complete. You hesitated {state.hesitation_count} time(s) "
+                        f"and used {len(state.phrases_used)} suggested phrase(s)."
+                    )
+                    await send({
+                        "type": "recap",
+                        "recap": recap,
+                        "phrases_used": state.phrases_used,
+                    })
+                    break
 
     except WebSocketDisconnect:
         logger.info("Session disconnected: %s", state.session_id)
     except Exception as e:
         logger.error("WebSocket error (%s): %s", state.session_id, e)
     finally:
+        if stt:
+            await stt.close()
         sessions.pop(state.session_id, None)
 
 

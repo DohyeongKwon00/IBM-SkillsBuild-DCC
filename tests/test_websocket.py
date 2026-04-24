@@ -1,4 +1,8 @@
-"""Tests for server/app.py WebSocket behavior (listener mode)."""
+"""Tests for server/app.py WebSocket behavior (AssemblyAI STT mode).
+
+AssemblyAI STT integration is mocked via AssemblyAISTTClient — tests verify the
+WebSocket control flow without requiring real API credentials.
+"""
 
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -7,26 +11,29 @@ from fastapi.testclient import TestClient
 from server.app import app
 
 
-@pytest.fixture
-def client():
-    return TestClient(app)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_stt_mock():
+    """Return an AssemblyAISTTClient mock that connects successfully."""
+    mock = AsyncMock()
+    mock.connect = AsyncMock()
+    mock.send_audio = AsyncMock()
+    mock.close = AsyncMock()
+    return mock
 
 
 def _setup_session(ws):
+    """Send start handshake and wait for session_ready."""
     ws.send_json({"type": "start"})
     for _ in range(10):
         msg = ws.receive_json()
         if msg["type"] == "session_ready":
             return msg
+        if msg["type"] == "error":
+            raise AssertionError(f"Got error during setup: {msg}")
     raise AssertionError("Did not receive session_ready")
-
-
-def test_session_ready_after_start(client):
-    with client.websocket_connect("/ws") as ws:
-        msg = _setup_session(ws)
-        assert msg["type"] == "session_ready"
-        assert "phrase_auto_dismiss_s" in msg
-        assert "min_speech_confidence" in msg
 
 
 def _drain_until(ws, wanted_type, max_msgs=20):
@@ -34,38 +41,74 @@ def _drain_until(ws, wanted_type, max_msgs=20):
         msg = ws.receive_json()
         if msg["type"] == wanted_type:
             return msg
-    raise AssertionError(f"Did not receive {wanted_type}")
+    raise AssertionError(f"Did not receive {wanted_type!r} within {max_msgs} messages")
 
 
-def test_transcript_chunk_triggers_listener_phrases(client):
-    """A transcript chunk routes to call_context_listener; phrases are forwarded."""
-    mock_phrases = ["I understand.", "Could you clarify?", "Thank you."]
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
-    with patch("server.app.call_context_listener", new=AsyncMock(return_value=mock_phrases)):
+@pytest.fixture
+def client():
+    return TestClient(app)
+
+
+@pytest.fixture
+def stt_mock():
+    return _make_stt_mock()
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+def test_session_ready_after_start(client, stt_mock):
+    with (
+        patch("server.app.AssemblyAISTTClient", return_value=stt_mock),
+        patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
+    ):
+        with client.websocket_connect("/ws") as ws:
+            msg = _setup_session(ws)
+            assert msg["type"] == "session_ready"
+            assert "phrase_auto_dismiss_s" in msg
+
+
+def test_error_when_credentials_missing(client):
+    """Server sends error message when AssemblyAI API key is not configured."""
+    with patch("server.app.ASSEMBLYAI_API_KEY", ""):
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "start"})
+            for _ in range(5):
+                msg = ws.receive_json()
+                if msg["type"] == "error":
+                    assert "not configured" in msg["message"].lower()
+                    return
+    pytest.fail("Expected error message for missing credentials")
+
+
+def test_phrase_selected_stored(client, stt_mock):
+    with (
+        patch("server.app.AssemblyAISTTClient", return_value=stt_mock),
+        patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
+    ):
         with client.websocket_connect("/ws") as ws:
             _setup_session(ws)
-            ws.send_json({"type": "transcript", "text": "um I was wondering"})
+            ws.send_json({"type": "phrase_selected", "phrase": "Could you clarify?"})
+            ws.send_json({"type": "end_session"})
 
-            _drain_until(ws, "thinking")
-            msg = _drain_until(ws, "phrases")
-            assert msg["phrases"] == mock_phrases
+            msg = _drain_until(ws, "recap")
+            assert "Could you clarify?" in msg["phrases_used"]
 
 
-def test_silent_listener_emits_idle(client):
-    with patch("server.app.call_context_listener", new=AsyncMock(return_value=None)):
+def test_end_session_returns_recap(client, stt_mock):
+    with (
+        patch("server.app.AssemblyAISTTClient", return_value=stt_mock),
+        patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
+    ):
         with client.websocket_connect("/ws") as ws:
             _setup_session(ws)
-            ws.send_json({"type": "transcript", "text": "the deadline is friday"})
+            ws.send_json({"type": "end_session"})
 
-            _drain_until(ws, "thinking")
-            _drain_until(ws, "idle")
-
-
-def test_end_session_returns_recap(client):
-    with client.websocket_connect("/ws") as ws:
-        _setup_session(ws)
-        ws.send_json({"type": "phrase_selected", "phrase": "Could you clarify?"})
-        ws.send_json({"type": "end_session"})
-
-        msg = _drain_until(ws, "recap")
-        assert "Could you clarify?" in msg["phrases_used"]
+            msg = _drain_until(ws, "recap")
+            assert msg["type"] == "recap"
+            assert "recap" in msg

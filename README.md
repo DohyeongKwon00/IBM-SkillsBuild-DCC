@@ -1,64 +1,98 @@
 # CommCopilot
 
-Real-time AI conversation assistant for international students. CommCopilot listens to a live English conversation through the browser microphone, streams each transcript chunk to a single ContextAgent on IBM watsonx Orchestrate, and surfaces short phrase suggestions only when the agent detects that the student is hesitating.
+Real-time AI conversation assistant for international students. CommCopilot streams microphone audio to **AssemblyAI Speech to Text**, which produces speaker-labeled transcripts. A **ContextAgent** on IBM watsonx Orchestrate listens to the conversation, identifies hesitation in the student's speech, and surfaces contextually relevant phrase suggestions in real time.
 
 Built as part of the **IBM SkillsBuild AI Experiential Learning Lab**.
 
 ## How It Works
 
 ```
-Microphone → Web Speech API → WebSocket → ContextAgent (silent listener)
-                                              │
-                                              ├── fluent  → stay silent (empty string)
-                                              └── hesitating → phrase_generation_agent (tool)
-                                                               → safety_filter_agent (tool)
-                                                               → JSON array of phrases → UI
+Microphone → AudioContext (PCM16, 16 kHz) → WebSocket (binary) → FastAPI
+                                                                      │
+                                                  AssemblyAI STT (WebSocket, v3)
+                                                  max_speakers=2, language=en
+                                                                      │
+                                             "[Speaker A]: um, I was wondering..."
+                                                                      │
+                                                      ContextAgent (Orchestrate)
+                                                      knows: Carter's profile + scenario
+                                                                      │
+                                           ├── Carter fluent   → silent (empty string)
+                                           └── Carter hesitates → phrase_generation_agent
+                                                                  → safety_filter_agent
+                                                                  → JSON array → UI
 ```
 
-1. **Speech-to-Text** — Chrome's Web Speech API transcribes the conversation in the browser (interim + final results). The browser does **not** run any hesitation or filtering logic. It just forwards each final STT chunk to the server.
-2. **ContextAgent** — The server POSTs every chunk to a single **ContextAgent** on Orchestrate as a silent message, tagged with a per-session `X-IBM-THREAD-ID` so the agent sees the running conversation. ContextAgent:
-   - distinguishes **who is speaking** (student vs. the other party) from the thread context,
-   - infers **role / tone / intent** from the thread itself (no scenario is provided),
-   - decides per chunk whether the student is hesitating (filler words, elongated sounds, trailing sentences, repeated words, meta-questions),
-   - returns an **empty string** when the student is fluent — the client sees nothing,
-   - or uses **`phrase_generation_agent`** and **`safety_filter_agent`** (configured as tools in the Orchestrate web UI) to produce and return a JSON array of 2–3 safe phrases.
+1. **Audio capture** — The browser captures microphone audio via `AudioContext` + `ScriptProcessorNode` (PCM16, 16 kHz, 4096-sample chunks) and streams raw binary frames to the server over WebSocket. No STT or hesitation logic runs in the browser.
 
-All hesitation detection, phrase generation, and safety filtering happen on the agent side. The browser is a dumb STT pipe by design.
+2. **AssemblyAI STT** — The server forwards each PCM16 frame to AssemblyAI's real-time streaming API (Universal-3 Pro model) over a persistent WebSocket connection (one per session). Connection parameters: `speaker_labels=true`, `max_speakers=2`, `language_code=en`. AssemblyAI returns speaker-labeled final transcripts on `end_of_turn`: `[Speaker A]: I was wondering...`
+
+3. **ContextAgent** — Every labeled transcript chunk is sent to a single **ContextAgent** on Orchestrate, tagged with a per-session `X-IBM-THREAD-ID` so the agent sees the running conversation. ContextAgent has pre-loaded context about the student and session:
+
+   **Student profile (built into agent instructions):**
+   - Name: Carter Lee, international student living in the US
+   - English proficiency: conversational but limited — struggles with technical/academic vocabulary
+   - Goal: receive phrase suggestions when he hesitates so he can respond confidently
+
+   **Session scenario (built into agent instructions):**
+   - Carter is visiting his professor's office hours to ask about his exam grade
+   - Role: student talking to professor (formal to semi-formal tone)
+   - Carter's goal: understand his grade, ask how to improve, or request reconsideration
+
+   On every chunk, ContextAgent:
+   - identifies **which speaker label is Carter** based on speech patterns and the student profile,
+   - tracks **role / tone / current intent** as the conversation unfolds,
+   - detects **hesitation** in Carter's speech only (filler words, elongated sounds, trailing sentences, repeated words, meta-questions),
+   - returns an **empty string** when Carter is fluent — the client sees nothing,
+   - or invokes **`phrase_generation_agent`** and **`safety_filter_agent`** to produce 2–3 phrases that Carter would **naturally say next** to continue his current thought, specific to the situation.
+
+All hesitation detection, phrase generation, and safety filtering happen on the agent side.
+
+## UI Features
+
+- **Live Transcript** — Speaker-labeled transcript lines appear in real time as AssemblyAI returns final results.
+- **Phrase cards** — When ContextAgent detects hesitation, 2–3 suggestion cards appear. They auto-dismiss after 5 seconds. Clicking a card highlights it as selected.
+- **Suggested Phrases History** — A persistent panel records every batch of suggestions shown during the session, grouped by time. Phrases Carter selected are marked with a checkmark (✓) in blue.
+- **Pipeline Log** — Full per-chunk agent activity log (prompt, raw output, parsed phrases) for debugging.
+- **Session Recap** — Summary shown when the session ends: hesitation count, phrases used.
 
 ## Tech Stack
 
-- **Backend**: FastAPI + WebSocket (`httpx` async client)
-- **Agent Orchestration**: IBM watsonx Orchestrate
-- **Auth**: IBM Cloud IAM 
-- **LLM**: IBM watsonx (via Orchestrate agents)
-- **Speech-to-Text**: Browser Web Speech API (Chrome)
-- **Frontend**: HTML/CSS/JS
+| Component | Technology |
+|---|---|
+| Backend | FastAPI + WebSocket |
+| Speech-to-Text | AssemblyAI Streaming v3 (Universal-3 Pro, speaker diarization, max 2 speakers) |
+| Agent Orchestration | IBM watsonx Orchestrate |
+| Auth | IBM Cloud IAM |
+| LLM | IBM watsonx Granite (via Orchestrate agents) |
+| Frontend | HTML / CSS / Vanilla JS |
 
 ## Agents
 
-Only **ContextAgent** is called from the server. The other two agents are configured as tools of ContextAgent inside the Orchestrate web UI — they are not called directly by this codebase.
+Only **ContextAgent** is called from the server. The other two agents are configured as collaborators of ContextAgent inside the Orchestrate web UI.
 
-| Agent | Where defined | Role |
-|---|---|---|
-| **ContextAgent** | Orchestrate | Silent listener. Distinguishes student from the other speaker, detects hesitation, invokes the other two agents as tools, returns phrases or empty. |
-| **phrase_generation_agent** | Orchestrate | Generates 3 candidate phrases given role/tone/intent context. Called by ContextAgent as a tool. |
-| **safety_filter_agent** | Orchestrate | Screens candidate phrases for appropriateness. Called by ContextAgent as a tool. |
+| Agent | Role |
+|---|---|
+| **ContextAgent** | Silent listener. Knows Carter's profile and the session scenario. Identifies Carter's speaker label, detects hesitation, invokes the other two agents, returns contextually relevant phrases or stays silent. |
+| **phrase_generation_agent** | Generates 3 candidate phrases that Carter would naturally say next, given role, tone, and current intent. Called by ContextAgent as a collaborator. |
+| **safety_filter_agent** | Screens candidate phrases for appropriateness. Called by ContextAgent as a collaborator. |
 
 ## Project Structure
 
 ```
 ├── agents/
-│   └── context_agent.yaml     # ContextAgent definition (tools: phrase_generation_agent, safety_filter_agent)
+│   └── context_agent.yaml       # ContextAgent definition (profile + scenario + instructions)
 ├── commcopilot/
-│   ├── config.py              # Environment variables and thresholds
-│   ├── session.py             # In-memory session state (session_id + thread_id)
-│   └── orchestrate.py         # Orchestrate API client (IAM auth + call_context_listener)
+│   ├── config.py                # Environment variables and thresholds
+│   ├── session.py               # In-memory session state
+│   ├── orchestrate.py           # Orchestrate API client (IAM auth + call_context_listener)
+│   └── assemblyai_stt.py        # AssemblyAI real-time STT WebSocket client (per-session)
 ├── server/
-│   └── app.py                 # FastAPI WebSocket endpoint
+│   └── app.py                   # FastAPI WebSocket endpoint
 ├── frontend/
 │   ├── index.html
 │   ├── style.css
-│   └── app.js                 # Web Speech API STT + WebSocket + phrase/log rendering
+│   └── app.js                   # AudioContext PCM16 streaming + phrase/history/log rendering
 ├── tests/
 │   ├── conftest.py
 │   ├── test_session.py
@@ -74,23 +108,14 @@ Only **ContextAgent** is called from the server. The other two agents are config
 
 ### Prerequisites
 
-- Python 3.11–3.13 (3.14 is not supported by `ibm-watsonx-orchestrate`)
-- Google Chrome (Web Speech API required for STT)
-- IBM Cloud account with watsonx Orchestrate instance
-- `phrase_generation_agent` and `safety_filter_agent` already created in your Orchestrate tenant and configured as tools of ContextAgent
+- Python 3.11–3.13
+- Google Chrome or Edge
+- AssemblyAI account (free tier works) — get API key at [assemblyai.com](https://www.assemblyai.com/dashboard)
+- IBM Cloud account with:
+  - watsonx Orchestrate instance
+  - `phrase_generation_agent` and `safety_filter_agent` already created in Orchestrate and configured as collaborators of ContextAgent
 
-### 1. Install Python 3.13
-
-Download from [python.org/downloads](https://www.python.org/downloads/) — choose **Python 3.13.x Windows installer (64-bit)**.
-
-During installation: check **"Add Python to PATH"**.
-
-Verify:
-```bash
-py -0        # should list 3.13 in the output
-```
-
-### 2. Clone and create virtual environment
+### 1. Clone and create virtual environment
 
 ```bash
 git clone <repo-url>
@@ -101,63 +126,58 @@ source .venv/Scripts/activate      # Windows
 # source .venv/bin/activate        # Mac/Linux
 ```
 
-### 3. Install dependencies
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Verify the Orchestrate CLI installed:
-```bash
-orchestrate --version
-```
+### 3. Configure environment variables
 
-### 4. Configure environment variables
-
-Copy the example file and fill in your values:
 ```bash
 cp .env.example .env
 ```
 
+Fill in `.env`:
+
 ```env
+# AssemblyAI Speech to Text
+ASSEMBLYAI_API_KEY=<your-assemblyai-api-key>
+
 # IBM watsonx Orchestrate
 ORCHESTRATE_URL=https://api.eu-gb.watson-orchestrate.cloud.ibm.com/instances/<your-instance-id>
 ORCHESTRATE_API_KEY=<your-ibm-cloud-api-key>
 
-# ContextAgent ID — the only agent called from the server.
-# phrase_generation_agent + safety_filter_agent are its tools in Orchestrate.
+# ContextAgent ID — run `orchestrate agents list` after importing to get this
 CONTEXT_AGENT_ID=
 ```
 
-**Where to find your credentials:**
-
-- `ORCHESTRATE_URL` + `ORCHESTRATE_API_KEY`: IBM Cloud → Resource list → watsonx Orchestrate → Service credentials → Create → download JSON
-- Personal IBM Cloud API key (recommended for CLI): Manage → Access (IAM) → API keys → Create
+**Where to find credentials:**
+- **AssemblyAI** — [assemblyai.com/dashboard](https://www.assemblyai.com/dashboard) → API Keys
+- **Orchestrate** — IBM Cloud → Resource list → watsonx Orchestrate → Service credentials
 
 ---
 
 ## Importing ContextAgent into Orchestrate
 
-**1. Connect the CLI to your Orchestrate instance:**
+**1. Connect the CLI:**
 ```bash
-orchestrate env add -n commcopilot-prod -u <ORCHESTRATE_URL> --type ibm_iam
-orchestrate env activate commcopilot-prod
-# Enter your IBM Cloud API key when prompted
+orchestrate env add -n commcopilot -u <ORCHESTRATE_URL> --type ibm_iam
+orchestrate env activate commcopilot
 ```
 
-**2. Make sure the tool agents already exist:**
+**2. Verify collaborator agents exist:**
 ```bash
 orchestrate agents list
+# must show phrase_generation_agent and safety_filter_agent
 ```
-
-You must see both `phrase_generation_agent` and `safety_filter_agent` in the output. They should already be configured as tools of ContextAgent in the Orchestrate web UI.
 
 **3. Import ContextAgent:**
 ```bash
 orchestrate agents import -f agents/context_agent.yaml
 ```
 
-**4. Get the ContextAgent id and paste it into `.env`:**
+**4. Get the agent ID and set it in `.env`:**
 ```bash
 orchestrate agents list
 ```
@@ -165,18 +185,23 @@ orchestrate agents list
 CONTEXT_AGENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
+> After any change to `context_agent.yaml`, re-run `orchestrate agents import -f agents/context_agent.yaml` to apply updates.
+
 ---
 
 ## Run
 
 ```bash
-source .venv/Scripts/activate   # if not already active
-python -m server.app
+# activate venv first if not already active
+source .venv/Scripts/activate   # Windows
+# source .venv/bin/activate     # Mac/Linux
+
+uvicorn server.app:app --reload
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in **Chrome** and press *Start Session*.
+Open [http://localhost:8000](http://localhost:8000) in Chrome or Edge and press **Start Session**.
 
-> Web Speech API only works in Chrome. Other browsers do not support it.
+The server log will show `AssemblyAI STT connected` and `AssemblyAI session ID: ...` once the STT connection is established.
 
 ---
 
@@ -186,11 +211,7 @@ Open [http://localhost:8000](http://localhost:8000) in **Chrome** and press *Sta
 pytest
 ```
 
-Unit tests cover session state, `call_context_listener` (silent / phrases / fenced JSON), and WebSocket behavior (`transcript → thinking → phrases` vs `transcript → thinking → idle`). All IBM service calls are mocked.
-
-> Note: the REST endpoint used by `commcopilot/orchestrate.py` is the IBM Cloud SaaS path
-> `/v1/orchestrate/{agent_id}/chat/completions` (no `/api` prefix). The ADK next-gen spec uses
-> `/api/v1/orchestrate/...` — do not confuse the two.
+Covers session state, `call_context_listener` (silent / phrases / fenced JSON), and WebSocket behavior. All external service calls are mocked — no real credentials needed to run the test suite.
 
 ---
 
@@ -198,18 +219,18 @@ Unit tests cover session state, `call_context_listener` (silent / phrases / fenc
 
 | Variable | Required | Description |
 |---|---|---|
-| `ORCHESTRATE_URL` | Yes | Orchestrate instance URL from service credentials |
+| `ASSEMBLYAI_API_KEY` | Yes | AssemblyAI API key |
+| `ORCHESTRATE_URL` | Yes | watsonx Orchestrate instance URL |
 | `ORCHESTRATE_API_KEY` | Yes | IBM Cloud IAM API key |
-| `CONTEXT_AGENT_ID` | Yes | UUID of ContextAgent (the silent listener) |
+| `CONTEXT_AGENT_ID` | Yes | UUID of ContextAgent |
 
 ## Tuning Reference
 
-Thresholds live in `commcopilot/config.py`:
+Constants in `commcopilot/config.py`:
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `PHRASE_AUTO_DISMISS_S` | `5` | How long phrase cards stay visible on the client |
-| `ORCHESTRATE_TIMEOUT_S` | `15.0` | Per-call timeout — ContextAgent may invoke phrase_generation_agent + safety_filter_agent as tools |
-| `MIN_SPEECH_CONFIDENCE` | `0.6` | Minimum Web Speech API confidence to forward a final transcript |
+| `PHRASE_AUTO_DISMISS_S` | `5` | Seconds phrase cards stay visible before auto-dismissing |
+| `ORCHESTRATE_TIMEOUT_S` | `15.0` | Per-call timeout for ContextAgent |
 | `TRANSCRIPT_WINDOW` | `10` | Sliding window of recent transcript segments kept in session state |
-| `SESSION_TIMEOUT_S` | `1800` | Evict sessions idle longer than this (30 min) |
+| `SESSION_TIMEOUT_S` | `1800` | Evict idle sessions after 30 min |
