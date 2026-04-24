@@ -33,6 +33,15 @@ button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; 
 #transcript-final { color: #222; }
 #transcript-interim { color: #999; font-style: italic; }
 
+#phrase-history { max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.phrase-history-empty { color: #aaa; font-size: 13px; }
+.phrase-history-group { border: 1px solid #e5e5e5; border-radius: 8px; overflow: hidden; }
+.phrase-history-time { font-size: 11px; color: #888; background: #f9f9f9; padding: 4px 10px; border-bottom: 1px solid #e5e5e5; }
+.phrase-history-item { padding: 7px 10px; font-size: 14px; color: #333; border-bottom: 1px solid #f0f0f0; }
+.phrase-history-item:last-child { border-bottom: none; }
+.phrase-history-item.used { color: #007aff; font-weight: 500; }
+.phrase-history-item.used::after { content: " ✓"; font-size: 11px; }
+
 #log-panel { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; max-height: 360px; overflow-y: auto; background: #0f1115; color: #d4d4d4; border-radius: 8px; padding: 10px; }
 .log-entry { padding: 6px 0; border-bottom: 1px solid #1f2330; }
 .log-entry:last-child { border-bottom: none; }

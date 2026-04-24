@@ -51,6 +51,8 @@ class AssemblyAISTTClient:
             "sample_rate": _SAMPLE_RATE,
             "speech_model": _SPEECH_MODEL,
             "speaker_labels": "true",
+            "max_speakers": 2,
+            "language_code": "en",
         })
         url = f"{_AAI_WS_BASE}?{params}"
 

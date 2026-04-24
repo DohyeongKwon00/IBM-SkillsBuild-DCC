@@ -1,10 +1,11 @@
 /**
  * CommCopilot Frontend
  *
- * The browser captures microphone audio via MediaRecorder (webm/opus, 250ms chunks)
- * and streams binary frames to the server over WebSocket. The server forwards audio
- * to IBM Watson STT, which returns speaker-labeled transcripts. ContextAgent then
- * decides whether the student is hesitating and returns phrase suggestions.
+ * The browser captures microphone audio via AudioContext (PCM16, 16 kHz)
+ * and streams binary frames to the server over WebSocket. The server forwards
+ * audio to AssemblyAI STT, which returns speaker-labeled transcripts.
+ * ContextAgent then decides whether the student is hesitating and returns
+ * phrase suggestions.
  *
  * No STT or hesitation detection happens in the browser — it only captures and streams.
  */
@@ -33,6 +34,10 @@ const errorBar = document.getElementById("error-bar");
 const inlineRecapEl = document.getElementById("inline-recap");
 const transcriptEl = document.getElementById("transcript-final");
 const logPanelEl = document.getElementById("log-panel");
+const phraseHistoryEl = document.getElementById("phrase-history");
+
+// tracks which phrases were selected, for history highlighting
+const selectedPhrases = new Set();
 
 // --- Session start ---
 async function startSession() {
@@ -160,6 +165,8 @@ function showPhrases(phrases) {
         phraseContainer.appendChild(card);
     });
 
+    appendPhraseHistory(phrases);
+
     if (dismissTimer) clearTimeout(dismissTimer);
     dismissTimer = setTimeout(() => {
         phraseContainer.innerHTML = "";
@@ -172,10 +179,47 @@ function selectPhrase(phrase) {
     selectedPhraseEl.textContent = phrase;
     selectedPhraseEl.style.display = "block";
     sendMessage({ type: "phrase_selected", phrase });
+    selectedPhrases.add(phrase);
+    markPhraseUsedInHistory(phrase);
 
     setTimeout(() => {
         selectedPhraseEl.style.display = "none";
     }, 4000);
+}
+
+// --- Phrase history ---
+function appendPhraseHistory(phrases) {
+    const empty = phraseHistoryEl.querySelector(".phrase-history-empty");
+    if (empty) empty.remove();
+
+    const now = new Date();
+    const time = now.toTimeString().slice(0, 8);
+
+    const group = document.createElement("div");
+    group.className = "phrase-history-group";
+
+    const timeEl = document.createElement("div");
+    timeEl.className = "phrase-history-time";
+    timeEl.textContent = time;
+    group.appendChild(timeEl);
+
+    phrases.forEach((phrase) => {
+        const item = document.createElement("div");
+        item.className = "phrase-history-item";
+        if (selectedPhrases.has(phrase)) item.classList.add("used");
+        item.textContent = phrase;
+        item.dataset.phrase = phrase;
+        group.appendChild(item);
+    });
+
+    phraseHistoryEl.appendChild(group);
+    phraseHistoryEl.scrollTop = phraseHistoryEl.scrollHeight;
+}
+
+function markPhraseUsedInHistory(phrase) {
+    phraseHistoryEl.querySelectorAll(".phrase-history-item").forEach((el) => {
+        if (el.dataset.phrase === phrase) el.classList.add("used");
+    });
 }
 
 // --- Recap ---

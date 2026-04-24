@@ -70,7 +70,10 @@ async def websocket_endpoint(ws: WebSocket):
     logger.info("Session started: %s (thread_id=%s)", state.session_id, state.thread_id)
 
     async def send(msg: dict) -> None:
-        await ws.send_text(json.dumps(msg))
+        try:
+            await ws.send_text(json.dumps(msg))
+        except Exception:
+            pass
 
     async def emit_log(event: dict) -> None:
         await send({"type": "log", **event})
