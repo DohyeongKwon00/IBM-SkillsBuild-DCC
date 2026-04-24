@@ -10,12 +10,13 @@
  */
 
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000];
-const AUDIO_MIME_TYPE = "audio/webm;codecs=opus";
-const AUDIO_CHUNK_MS = 250;
+const SAMPLE_RATE = 16000;
+const BUFFER_SIZE = 4096;  // ~256ms at 16 kHz
 
 let ws = null;
 let mediaStream = null;
-let mediaRecorder = null;
+let audioContext = null;
+let scriptProcessor = null;
 let reconnectAttempt = 0;
 let dismissTimer = null;
 let isSessionActive = false;
@@ -35,17 +36,13 @@ const logPanelEl = document.getElementById("log-panel");
 
 // --- Session start ---
 async function startSession() {
-    if (!window.MediaRecorder) {
-        showError("MediaRecorder not supported. Please use Chrome or Edge.");
-        return;
-    }
-    if (!MediaRecorder.isTypeSupported(AUDIO_MIME_TYPE)) {
-        showError("audio/webm;codecs=opus is not supported in this browser. Please use Chrome or Edge.");
+    if (!window.AudioContext && !window.webkitAudioContext) {
+        showError("AudioContext not supported. Please use Chrome or Edge.");
         return;
     }
 
     try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     } catch (e) {
         showError("Mic permission denied. Please allow microphone access.");
         return;
@@ -126,17 +123,27 @@ function sendMessage(msg) {
     }
 }
 
-// --- Audio streaming ---
+// --- Audio streaming (PCM16 via AudioContext -> AssemblyAI) ---
 function startAudioStreaming() {
-    mediaRecorder = new MediaRecorder(mediaStream, { mimeType: AUDIO_MIME_TYPE });
+    const AC = window.AudioContext || window.webkitAudioContext;
+    audioContext = new AC({ sampleRate: SAMPLE_RATE });
 
-    mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(e.data);  // binary frame -> server -> Watson STT
+    const source = audioContext.createMediaStreamSource(mediaStream);
+    scriptProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+
+    scriptProcessor.onaudioprocess = (e) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const float32 = e.inputBuffer.getChannelData(0);
+        const int16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+            const s = Math.max(-1, Math.min(1, float32[i]));
+            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
+        ws.send(int16.buffer);
     };
 
-    mediaRecorder.start(AUDIO_CHUNK_MS);
+    source.connect(scriptProcessor);
+    scriptProcessor.connect(audioContext.destination);
 }
 
 // --- Phrase display ---
@@ -266,10 +273,14 @@ function hideError() {
 
 // --- Cleanup ---
 function cleanup() {
-    if (mediaRecorder && mediaRecorder.state !== "inactive") {
-        mediaRecorder.stop();
+    if (scriptProcessor) {
+        scriptProcessor.disconnect();
+        scriptProcessor = null;
     }
-    mediaRecorder = null;
+    if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+    }
     if (mediaStream) {
         mediaStream.getTracks().forEach((t) => t.stop());
         mediaStream = null;

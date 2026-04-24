@@ -156,14 +156,14 @@ async def call_context_listener(
         else ""
     )
 
-    # Speaker labels are provided by Watson STT.
-    # ContextAgent identifies the student speaker from the conversation thread
+    # Speaker labels are provided by AssemblyAI real-time STT (A, B, ...).
+    # ContextAgent identifies the student from the conversation thread
     # and user profile already in context.
     prompt = (
         f"New transcript chunk: {chunk}\n"
-        f"Note: speaker labels come from Watson STT — [Speaker 0] and [Speaker 1] "
+        f"Note: speaker labels come from AssemblyAI STT — [Speaker A] and [Speaker B] "
         f"are the two participants. Use your knowledge of the user (student) "
-        f"already in context to determine which speaker ID is the student.\n"
+        f"already in context to determine which speaker label belongs to the student.\n"
         f"{used_hint}\n\n"
         "Apply your guidelines. If the student is speaking fluently, return an empty string. "
         "If the student is hesitating, invoke phrase_generation_agent then "

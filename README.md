@@ -1,29 +1,29 @@
 # CommCopilot
 
-Real-time AI conversation assistant for international students. CommCopilot streams microphone audio to **IBM Watson Speech to Text**, which produces speaker-labeled transcripts. A **ContextAgent** on IBM watsonx Orchestrate reads each transcript chunk, identifies whether the student is hesitating, and surfaces short phrase suggestions in real time.
+Real-time AI conversation assistant for international students. CommCopilot streams microphone audio to **AssemblyAI Speech to Text**, which produces speaker-labeled transcripts. A **ContextAgent** on IBM watsonx Orchestrate reads each transcript chunk, identifies whether the student is hesitating, and surfaces short phrase suggestions in real time.
 
 Built as part of the **IBM SkillsBuild AI Experiential Learning Lab**.
 
 ## How It Works
 
 ```
-Microphone → MediaRecorder (webm/opus) → WebSocket (binary) → FastAPI
-                                                                   │
-                                                          IBM Watson STT (WebSocket)
-                                                                   │
-                                                    "[Speaker 0]: um, I was wondering..."
-                                                                   │
-                                                         ContextAgent (Orchestrate)
-                                                                   │
-                                              ├── fluent  → silent (empty string)
-                                              └── hesitating → phrase_generation_agent
-                                                               → safety_filter_agent
-                                                               → JSON array → UI
+Microphone → AudioContext (PCM16, 16 kHz) → WebSocket (binary) → FastAPI
+                                                                      │
+                                                      AssemblyAI STT (WebSocket, v3)
+                                                                      │
+                                                 "[Speaker A]: um, I was wondering..."
+                                                                      │
+                                                          ContextAgent (Orchestrate)
+                                                                      │
+                                               ├── fluent  → silent (empty string)
+                                               └── hesitating → phrase_generation_agent
+                                                                → safety_filter_agent
+                                                                → JSON array → UI
 ```
 
-1. **Audio capture** — The browser captures microphone audio via `MediaRecorder` (webm/opus, 250 ms chunks) and streams binary frames to the server over WebSocket. No STT or hesitation logic runs in the browser.
+1. **Audio capture** — The browser captures microphone audio via `AudioContext` + `ScriptProcessorNode` (PCM16, 16 kHz, 256-sample chunks) and streams raw binary frames to the server over WebSocket. No STT or hesitation logic runs in the browser.
 
-2. **IBM Watson STT** — The server forwards each binary frame to IBM Watson Speech to Text over a persistent WebSocket connection (one per session). Watson returns speaker-labeled final transcripts: `[Speaker 0]: I was wondering...` The server identifies the dominant speaker per utterance using Watson's `speaker_labels` array and formats transcripts accordingly.
+2. **AssemblyAI STT** — The server forwards each PCM16 frame to AssemblyAI's real-time streaming API (Universal-3 Pro model) over a persistent WebSocket connection (one per session). AssemblyAI returns speaker-labeled final transcripts on `end_of_turn`: `[Speaker A]: I was wondering...` Speaker diarization runs automatically — no scenario or speaker count configuration needed.
 
 3. **ContextAgent** — Every labeled transcript chunk is sent to a single **ContextAgent** on Orchestrate, tagged with a per-session `X-IBM-THREAD-ID` so the agent sees the running conversation. ContextAgent:
    - identifies **which speaker is the student** using user context already in session memory,
@@ -39,7 +39,7 @@ All hesitation detection, phrase generation, and safety filtering happen on the 
 | Component | Technology |
 |---|---|
 | Backend | FastAPI + WebSocket |
-| Speech-to-Text | IBM Watson Speech to Text (streaming WebSocket) |
+| Speech-to-Text | AssemblyAI Streaming v3 (Universal-3 Pro, speaker diarization) |
 | Agent Orchestration | IBM watsonx Orchestrate |
 | Auth | IBM Cloud IAM |
 | LLM | IBM watsonx Granite (via Orchestrate agents) |
@@ -59,18 +59,18 @@ Only **ContextAgent** is called from the server. The other two agents are config
 
 ```
 ├── agents/
-│   └── context_agent.yaml     # ContextAgent definition
+│   └── context_agent.yaml       # ContextAgent definition
 ├── commcopilot/
-│   ├── config.py              # Environment variables and thresholds
-│   ├── session.py             # In-memory session state
-│   ├── orchestrate.py         # Orchestrate API client (IAM auth + call_context_listener)
-│   └── watson_stt.py          # IBM Watson STT WebSocket client (per-session)
+│   ├── config.py                # Environment variables and thresholds
+│   ├── session.py               # In-memory session state
+│   ├── orchestrate.py           # Orchestrate API client (IAM auth + call_context_listener)
+│   └── assemblyai_stt.py        # AssemblyAI real-time STT WebSocket client (per-session)
 ├── server/
-│   └── app.py                 # FastAPI WebSocket endpoint
+│   └── app.py                   # FastAPI WebSocket endpoint
 ├── frontend/
 │   ├── index.html
 │   ├── style.css
-│   └── app.js                 # MediaRecorder audio streaming + phrase/log rendering
+│   └── app.js                   # AudioContext PCM16 streaming + phrase/log rendering
 ├── tests/
 │   ├── conftest.py
 │   ├── test_session.py
@@ -87,9 +87,9 @@ Only **ContextAgent** is called from the server. The other two agents are config
 ### Prerequisites
 
 - Python 3.11–3.13
-- Google Chrome or Edge (MediaRecorder webm/opus required)
+- Google Chrome or Edge
+- AssemblyAI account (free tier works) — get API key at [assemblyai.com](https://www.assemblyai.com/dashboard)
 - IBM Cloud account with:
-  - Watson Speech to Text instance (Lite plan is sufficient)
   - watsonx Orchestrate instance
   - `phrase_generation_agent` and `safety_filter_agent` already created in Orchestrate and configured as tools of ContextAgent
 
@@ -119,10 +119,8 @@ cp .env.example .env
 Fill in `.env`:
 
 ```env
-# IBM Watson Speech to Text
-# IBM Cloud Console → Speech to Text → Manage
-WATSON_STT_API_KEY=<your-watson-stt-api-key>
-WATSON_STT_URL=https://api.us-south.speech-to-text.watson.cloud.ibm.com/instances/<your-instance-id>
+# AssemblyAI Speech to Text
+ASSEMBLYAI_API_KEY=<your-assemblyai-api-key>
 
 # IBM watsonx Orchestrate
 ORCHESTRATE_URL=https://api.eu-gb.watson-orchestrate.cloud.ibm.com/instances/<your-instance-id>
@@ -133,7 +131,7 @@ CONTEXT_AGENT_ID=
 ```
 
 **Where to find credentials:**
-- **Watson STT** — IBM Cloud → Resource list → Speech to Text → Manage → copy API key and URL
+- **AssemblyAI** — [assemblyai.com/dashboard](https://www.assemblyai.com/dashboard) → API Keys
 - **Orchestrate** — IBM Cloud → Resource list → watsonx Orchestrate → Service credentials
 
 ---
@@ -179,7 +177,7 @@ uvicorn server.app:app --reload
 
 Open [http://localhost:8000](http://localhost:8000) in Chrome or Edge and press **Start Session**.
 
-The server log will show `Watson STT connected and listening` once the STT connection is established.
+The server log will show `AssemblyAI STT connected` and `AssemblyAI session ID: ...` once the STT connection is established.
 
 ---
 
@@ -189,7 +187,7 @@ The server log will show `Watson STT connected and listening` once the STT conne
 pytest
 ```
 
-Covers session state, `call_context_listener` (silent / phrases / fenced JSON), and WebSocket behavior. All IBM service calls are mocked — no real credentials needed to run the test suite.
+Covers session state, `call_context_listener` (silent / phrases / fenced JSON), and WebSocket behavior. All external service calls are mocked — no real credentials needed to run the test suite.
 
 ---
 
@@ -197,8 +195,7 @@ Covers session state, `call_context_listener` (silent / phrases / fenced JSON), 
 
 | Variable | Required | Description |
 |---|---|---|
-| `WATSON_STT_API_KEY` | Yes | IBM Watson STT API key |
-| `WATSON_STT_URL` | Yes | IBM Watson STT instance URL (full URL from IBM Cloud Console) |
+| `ASSEMBLYAI_API_KEY` | Yes | AssemblyAI API key |
 | `ORCHESTRATE_URL` | Yes | watsonx Orchestrate instance URL |
 | `ORCHESTRATE_API_KEY` | Yes | IBM Cloud IAM API key |
 | `CONTEXT_AGENT_ID` | Yes | UUID of ContextAgent |
@@ -213,4 +210,3 @@ Constants in `commcopilot/config.py`:
 | `ORCHESTRATE_TIMEOUT_S` | `15.0` | Per-call timeout for ContextAgent |
 | `TRANSCRIPT_WINDOW` | `10` | Sliding window of recent transcript segments in session state |
 | `SESSION_TIMEOUT_S` | `1800` | Evict idle sessions after 30 min |
-| `WATSON_STT_MODEL` | `en-US_BroadbandModel` | Watson STT recognition model |

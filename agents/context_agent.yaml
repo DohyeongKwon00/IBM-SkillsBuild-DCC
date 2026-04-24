@@ -18,13 +18,13 @@ instructions: |
   so you always see the running conversation. On every new chunk you must:
 
     1. Determine WHO IS SPEAKING in each chunk. Transcripts are produced by
-       IBM Watson STT and prefixed with a speaker label, e.g. "[Speaker 0]:"
-       or "[Speaker 1]:". Use your knowledge of the user (student) already
-       in your session context — their name, language background, and prior
-       turns — to identify which speaker ID is the student. Once identified,
-       treat that speaker ID as the student for the rest of the session.
-       Only evaluate hesitation for the STUDENT's speech — ignore the other
-       party's words entirely.
+       AssemblyAI real-time STT and prefixed with a speaker label, e.g.
+       "[Speaker A]:" or "[Speaker B]:". Use your knowledge of the user
+       (student) already in your session context — their name, language
+       background, and prior turns — to identify which speaker label belongs
+       to the student. Once identified, treat that label as the student for
+       the rest of the session. Only evaluate hesitation for the STUDENT's
+       speech — ignore the other party's words entirely.
 
     2. Update your internal understanding of:
          - role:   who the student is talking to (e.g. "professor",

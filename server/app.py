@@ -19,15 +19,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from commcopilot.config import (
+    ASSEMBLYAI_API_KEY,
     PHRASE_AUTO_DISMISS_S,
     SESSION_TIMEOUT_S,
     TRANSCRIPT_WINDOW,
-    WATSON_STT_API_KEY,
-    WATSON_STT_URL,
 )
 from commcopilot.orchestrate import call_context_listener, warmup as orchestrate_warmup
 from commcopilot.session import SessionState
-from commcopilot.watson_stt import WatsonSTTClient
+from commcopilot.assemblyai_stt import AssemblyAISTTClient
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -77,7 +76,7 @@ async def websocket_endpoint(ws: WebSocket):
         await send({"type": "log", **event})
 
     async def on_transcript(chunk: str) -> None:
-        """Called by WatsonSTTClient when a speaker-labeled transcript is ready."""
+        """Called by AssemblyAISTTClient when a speaker-labeled transcript is ready."""
         state.transcript_buffer.append(chunk)
         if len(state.transcript_buffer) > TRANSCRIPT_WINDOW:
             state.transcript_buffer = state.transcript_buffer[-TRANSCRIPT_WINDOW:]
@@ -108,7 +107,7 @@ async def websocket_endpoint(ws: WebSocket):
         else:
             await send({"type": "idle"})
 
-    watson: WatsonSTTClient | None = None
+    stt: AssemblyAISTTClient | None = None
 
     try:
         # Wait for the browser's initial "start" message.
@@ -116,17 +115,16 @@ async def websocket_endpoint(ws: WebSocket):
 
         asyncio.create_task(orchestrate_warmup())
 
-        # Validate Watson STT credentials before telling the browser we're ready.
-        if not WATSON_STT_API_KEY or not WATSON_STT_URL:
-            await send({"type": "error", "message": "Watson STT is not configured on the server."})
+        if not ASSEMBLYAI_API_KEY:
+            await send({"type": "error", "message": "AssemblyAI API key is not configured on the server."})
             return
 
-        watson = WatsonSTTClient(on_transcript=on_transcript)
+        stt = AssemblyAISTTClient(on_transcript=on_transcript)
         try:
-            await watson.connect()
+            await stt.connect()
         except Exception as e:
-            logger.error("Watson STT connect failed: %s", e)
-            await send({"type": "error", "message": f"Could not connect to Watson STT: {e}"})
+            logger.error("AssemblyAI STT connect failed: %s", e)
+            await send({"type": "error", "message": f"Could not connect to AssemblyAI STT: {e}"})
             return
 
         await send({
@@ -139,8 +137,8 @@ async def websocket_endpoint(ws: WebSocket):
             data = await ws.receive()
 
             if data.get("bytes"):
-                # Binary: forward audio frame to Watson STT.
-                await watson.send_audio(data["bytes"])
+                # Binary PCM16 frame from browser AudioContext -> AssemblyAI.
+                await stt.send_audio(data["bytes"])
 
             elif data.get("text"):
                 msg = json.loads(data["text"])
@@ -170,8 +168,8 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception as e:
         logger.error("WebSocket error (%s): %s", state.session_id, e)
     finally:
-        if watson:
-            await watson.close()
+        if stt:
+            await stt.close()
         sessions.pop(state.session_id, None)
 
 

@@ -15,10 +15,8 @@ ORCHESTRATE_API_KEY = os.getenv("ORCHESTRATE_API_KEY", "")
 # Agent ID — single ContextAgent handles hesitation detection + phrase generation + safety
 CONTEXT_AGENT_ID = os.getenv("CONTEXT_AGENT_ID", "")
 
-# IBM Watson Speech to Text
-WATSON_STT_API_KEY = os.getenv("WATSON_STT_API_KEY", "")
-WATSON_STT_URL = os.getenv("WATSON_STT_URL", "")  # e.g. "api.us-south.speech-to-text.watson.cloud.ibm.com"
-WATSON_STT_MODEL = "en-US_BroadbandModel"
+# AssemblyAI Speech to Text
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY", "")
 
 # Thresholds
 PHRASE_AUTO_DISMISS_S = 5         # Phrase cards auto-dismiss

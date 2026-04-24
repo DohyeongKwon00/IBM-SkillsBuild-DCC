@@ -1,11 +1,11 @@
-"""Tests for server/app.py WebSocket behavior (IBM Watson STT mode).
+"""Tests for server/app.py WebSocket behavior (AssemblyAI STT mode).
 
-Watson STT integration is mocked via WatsonSTTClient — tests verify the
-WebSocket control flow without requiring real IBM credentials.
+AssemblyAI STT integration is mocked via AssemblyAISTTClient — tests verify the
+WebSocket control flow without requiring real API credentials.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from server.app import app
@@ -15,8 +15,8 @@ from server.app import app
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_watson_mock():
-    """Return a WatsonSTTClient mock that connects successfully."""
+def _make_stt_mock():
+    """Return an AssemblyAISTTClient mock that connects successfully."""
     mock = AsyncMock()
     mock.connect = AsyncMock()
     mock.send_audio = AsyncMock()
@@ -54,19 +54,18 @@ def client():
 
 
 @pytest.fixture
-def watson_mock():
-    return _make_watson_mock()
+def stt_mock():
+    return _make_stt_mock()
 
 
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_session_ready_after_start(client, watson_mock):
+def test_session_ready_after_start(client, stt_mock):
     with (
-        patch("server.app.WatsonSTTClient", return_value=watson_mock),
-        patch("server.app.WATSON_STT_API_KEY", "fake-key"),
-        patch("server.app.WATSON_STT_URL", "api.us-south.speech-to-text.watson.cloud.ibm.com"),
+        patch("server.app.AssemblyAISTTClient", return_value=stt_mock),
+        patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
     ):
         with client.websocket_connect("/ws") as ws:
             msg = _setup_session(ws)
@@ -75,11 +74,8 @@ def test_session_ready_after_start(client, watson_mock):
 
 
 def test_error_when_credentials_missing(client):
-    """Server sends error message when Watson STT is not configured."""
-    with (
-        patch("server.app.WATSON_STT_API_KEY", ""),
-        patch("server.app.WATSON_STT_URL", ""),
-    ):
+    """Server sends error message when AssemblyAI API key is not configured."""
+    with patch("server.app.ASSEMBLYAI_API_KEY", ""):
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"type": "start"})
             for _ in range(5):
@@ -87,14 +83,13 @@ def test_error_when_credentials_missing(client):
                 if msg["type"] == "error":
                     assert "not configured" in msg["message"].lower()
                     return
-        pytest.fail("Expected error message for missing credentials")
+    pytest.fail("Expected error message for missing credentials")
 
 
-def test_phrase_selected_stored(client, watson_mock):
+def test_phrase_selected_stored(client, stt_mock):
     with (
-        patch("server.app.WatsonSTTClient", return_value=watson_mock),
-        patch("server.app.WATSON_STT_API_KEY", "fake-key"),
-        patch("server.app.WATSON_STT_URL", "fake-url"),
+        patch("server.app.AssemblyAISTTClient", return_value=stt_mock),
+        patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
     ):
         with client.websocket_connect("/ws") as ws:
             _setup_session(ws)
@@ -105,11 +100,10 @@ def test_phrase_selected_stored(client, watson_mock):
             assert "Could you clarify?" in msg["phrases_used"]
 
 
-def test_end_session_returns_recap(client, watson_mock):
+def test_end_session_returns_recap(client, stt_mock):
     with (
-        patch("server.app.WatsonSTTClient", return_value=watson_mock),
-        patch("server.app.WATSON_STT_API_KEY", "fake-key"),
-        patch("server.app.WATSON_STT_URL", "fake-url"),
+        patch("server.app.AssemblyAISTTClient", return_value=stt_mock),
+        patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
     ):
         with client.websocket_connect("/ws") as ws:
             _setup_session(ws)
