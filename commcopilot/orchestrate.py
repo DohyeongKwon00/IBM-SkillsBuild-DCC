@@ -160,21 +160,9 @@ async def call_context_listener(
     # ContextAgent identifies the student from the conversation thread
     # and user profile already in context.
     prompt = (
-        f"New transcript chunk: {chunk}\n"
-        f"Note: speaker labels come from AssemblyAI STT — [Speaker A] and [Speaker B] "
-        f"are the two participants. Carter is one of them; identify him from context.\n"
-        "Scenario: Carter Lee (international student) is at his professor's office hours "
-        "to ask about his exam grade. The other speaker is the professor. "
-        "Carter wants to understand his grade and possibly ask how to improve or request reconsideration.\n"
-        f"{used_hint}\n\n"
-        "Apply your guidelines.\n"
-        "- If Carter is speaking fluently, return an empty string.\n"
-        "- If Carter is hesitating, analyze what he is trying to say right now based on "
-        "the full conversation context and the scenario above. Invoke phrase_generation_agent "
-        "with his current intent, role, tone, and the recent transcript. The generated phrases "
-        "must be what Carter would NATURALLY SAY NEXT to continue his current thought — "
-        "specific to this office hours situation, not generic fillers. "
-        "Then invoke safety_filter_agent and return ONLY a JSON array of 2-3 phrase strings."
+        f"Transcript chunk: {chunk}\n"
+        f"{used_hint}\n"
+        "Apply your guidelines and return empty string or JSON array of 2-3 phrases."
     )
 
     await _emit(on_event, {

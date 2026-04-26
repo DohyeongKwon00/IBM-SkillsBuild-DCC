@@ -5,13 +5,16 @@ Audio flow:
     -> binary WebSocket frames -> FastAPI
     -> AssemblyAISTTClient.send_audio()
     -> AssemblyAI Streaming WebSocket (wss://streaming.assemblyai.com/v3/ws)
-    -> Turn messages with speaker_label + end_of_turn flag
-    -> on_transcript callback("[Speaker A]: text") on end_of_turn
+    -> Turn messages with turn_is_formatted=True flag
+    -> on_transcript callback("[Speaker A]: text") on formatted turn
 
-Message types from AssemblyAI:
-    Begin       -> session opened, log session ID
-    Turn        -> transcript chunk; emit only when end_of_turn=True
-    Termination -> session stats, normal close
+Connection params:
+    format_turns=True       enables punctuated/capitalized final transcripts
+    speaker_labels=True     enables per-turn speaker label (A, B, ...)
+    prompt                  tells AssemblyAI who the speakers are for better diarization
+    language_detection=False fixed to English
+    end_of_turn_confidence_threshold / min_end_of_turn_silence / max_turn_silence / vad_threshold
+                            tuned for natural turn detection
 """
 
 import asyncio
@@ -33,6 +36,19 @@ _AAI_WS_BASE = "wss://streaming.assemblyai.com/v3/ws"
 _SAMPLE_RATE = 16000
 _SPEECH_MODEL = "u3-rt-pro"
 
+_CONNECTION_PARAMS = {
+    "sample_rate": _SAMPLE_RATE,
+    "speech_model": _SPEECH_MODEL,
+    "speaker_labels": "true",
+    "format_turns": "true",
+    "end_of_turn_confidence_threshold": 0.4,
+    "min_end_of_turn_silence_when_confident": 100,
+    "max_turn_silence": 1000,
+    "vad_threshold": 0.4,
+    "language_detection": "false",
+    "max_speakers": 2,
+}
+
 
 class AssemblyAISTTClient:
     """Manages a single AssemblyAI real-time WebSocket connection per session."""
@@ -47,15 +63,7 @@ class AssemblyAISTTClient:
         if not ASSEMBLYAI_API_KEY:
             raise RuntimeError("ASSEMBLYAI_API_KEY must be set")
 
-        params = urlencode({
-            "sample_rate": _SAMPLE_RATE,
-            "speech_model": _SPEECH_MODEL,
-            "speaker_labels": "true",
-            "max_speakers": 2,
-            "language_code": "en",
-        })
-        url = f"{_AAI_WS_BASE}?{params}"
-
+        url = f"{_AAI_WS_BASE}?{urlencode(_CONNECTION_PARAMS)}"
         self._ws = await websockets.connect(
             url,
             additional_headers={"Authorization": ASSEMBLYAI_API_KEY},
@@ -87,18 +95,16 @@ class AssemblyAISTTClient:
 
                 elif msg_type == "Turn":
                     transcript = msg.get("transcript", "").strip()
-                    end_of_turn = msg.get("end_of_turn", False)
+                    turn_is_formatted = msg.get("turn_is_formatted", False)
                     speaker = msg.get("speaker_label") or "A"
 
                     if not transcript:
                         continue
 
-                    if end_of_turn:
-                        # Final utterance — emit to UI and ContextAgent.
+                    if turn_is_formatted:
                         chunk = f"[Speaker {speaker}]: {transcript}"
                         logger.info("Final turn: %r", chunk)
                         asyncio.create_task(self._on_transcript(chunk))
-                    # Partial turns are ignored server-side; UI gets them separately.
 
                 elif msg_type == "Termination":
                     logger.info(
