@@ -5,6 +5,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #
 h1, h2 { margin-bottom: 16px; }
 p { margin-bottom: 12px; color: #666; }
 button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; }
+#mic-selectors { display: flex; flex-direction: column; gap: 10px; margin: 16px 0; }
+#mic-selectors label { display: flex; flex-direction: column; gap: 6px; color: #333; font-size: 13px; font-weight: 600; }
+#mic-selectors select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; background: white; font-size: 14px; }
+#refresh-mics-btn { background: #e5e5ea; color: #222; }
 #status-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; margin-bottom: 20px; }
 #status-indicator { color: #34c759; font-weight: 600; }
 #status-indicator.processing { color: #ff9500; }

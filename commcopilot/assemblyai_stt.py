@@ -1,4 +1,4 @@
-"""AssemblyAI real-time Speech to Text WebSocket client (per-session).
+"""AssemblyAI real-time Speech to Text WebSocket client.
 
 Audio flow:
     Browser (AudioContext, PCM16, 16 kHz, 4096-sample chunks ~256ms)
@@ -6,12 +6,10 @@ Audio flow:
     -> AssemblyAISTTClient.send_audio()
     -> AssemblyAI Streaming WebSocket (wss://streaming.assemblyai.com/v3/ws)
     -> Turn messages with turn_is_formatted=True flag
-    -> on_transcript callback("[Speaker A]: text") on formatted turn
+    -> on_transcript callback("text") on formatted turn
 
 Connection params:
     format_turns=True       enables punctuated/capitalized final transcripts
-    speaker_labels=True     enables per-turn speaker label (A, B, ...)
-    prompt                  tells AssemblyAI who the speakers are for better diarization
     language_detection=False fixed to English
     end_of_turn_confidence_threshold / min_end_of_turn_silence / max_turn_silence / vad_threshold
                             tuned for natural turn detection
@@ -20,9 +18,11 @@ Connection params:
 import asyncio
 import json
 import logging
+import ssl
 from urllib.parse import urlencode
 from typing import Awaitable, Callable
 
+import certifi
 import websockets
 import websockets.exceptions
 
@@ -39,24 +39,24 @@ _SPEECH_MODEL = "u3-rt-pro"
 _CONNECTION_PARAMS = {
     "sample_rate": _SAMPLE_RATE,
     "speech_model": _SPEECH_MODEL,
-    "speaker_labels": "true",
     "format_turns": "true",
     "end_of_turn_confidence_threshold": 0.4,
     "min_end_of_turn_silence_when_confident": 100,
     "max_turn_silence": 1000,
     "vad_threshold": 0.4,
     "language_detection": "false",
-    "max_speakers": 2,
 }
 
 
 class AssemblyAISTTClient:
-    """Manages a single AssemblyAI real-time WebSocket connection per session."""
+    """Manages one AssemblyAI real-time WebSocket connection for one audio source."""
 
-    def __init__(self, on_transcript: OnTranscript) -> None:
+    def __init__(self, on_transcript: OnTranscript, source_name: str = "audio") -> None:
         self._ws = None
         self._on_transcript = on_transcript
+        self._source_name = source_name
         self._receive_task: asyncio.Task | None = None
+        self._emitted_turn_orders: set[int] = set()
 
     async def connect(self) -> None:
         """Open AssemblyAI streaming WebSocket."""
@@ -64,12 +64,14 @@ class AssemblyAISTTClient:
             raise RuntimeError("ASSEMBLYAI_API_KEY must be set")
 
         url = f"{_AAI_WS_BASE}?{urlencode(_CONNECTION_PARAMS)}"
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
         self._ws = await websockets.connect(
             url,
             additional_headers={"Authorization": ASSEMBLYAI_API_KEY},
+            ssl=ssl_context,
         )
 
-        logger.info("AssemblyAI STT connected")
+        logger.info("AssemblyAI STT connected (%s)", self._source_name)
         self._receive_task = asyncio.create_task(self._receive_loop())
 
     async def send_audio(self, data: bytes) -> None:
@@ -96,15 +98,24 @@ class AssemblyAISTTClient:
                 elif msg_type == "Turn":
                     transcript = msg.get("transcript", "").strip()
                     turn_is_formatted = msg.get("turn_is_formatted", False)
-                    speaker = msg.get("speaker_label") or "A"
-
+                    end_of_turn = msg.get("end_of_turn", False)
+                    turn_order = msg.get("turn_order")
                     if not transcript:
                         continue
 
-                    if turn_is_formatted:
-                        chunk = f"[Speaker {speaker}]: {transcript}"
-                        logger.info("Final turn: %r", chunk)
-                        asyncio.create_task(self._on_transcript(chunk))
+                    # AssemblyAI sends progressive Turn updates. Only emit the
+                    # formatted end-of-turn once so the UI/history do not get
+                    # repeated partials for the same spoken turn.
+                    if not (end_of_turn and turn_is_formatted):
+                        continue
+
+                    if isinstance(turn_order, int):
+                        if turn_order in self._emitted_turn_orders:
+                            continue
+                        self._emitted_turn_orders.add(turn_order)
+
+                    logger.info("Final turn (%s): %r", self._source_name, transcript)
+                    asyncio.create_task(self._on_transcript(transcript))
 
                 elif msg_type == "Termination":
                     logger.info(

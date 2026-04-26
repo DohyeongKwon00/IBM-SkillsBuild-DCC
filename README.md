@@ -1,33 +1,30 @@
 # CommCopilot
 
-Real-time AI conversation assistant for international students. CommCopilot streams microphone audio to **AssemblyAI Speech to Text**, which produces speaker-labeled transcripts. A **ContextAgent** on IBM watsonx Orchestrate listens to the conversation, identifies hesitation in the student's speech, and surfaces contextually relevant phrase suggestions in real time.
+Real-time AI conversation assistant for international students. CommCopilot streams two separate microphone inputs to **AssemblyAI Speech to Text**, labels transcripts by source stream, and sends Carter's turns to a **ContextAgent** on IBM watsonx Orchestrate. The agent identifies hesitation in Carter's speech and surfaces contextually relevant phrase suggestions in real time.
 
 Built as part of the **IBM SkillsBuild AI Experiential Learning Lab**.
 
 ## How It Works
 
 ```
-Microphone → AudioContext (PCM16, 16 kHz) → WebSocket (binary) → FastAPI
-                                                                      │
-                                                  AssemblyAI STT (WebSocket, v3)
-                                                  max_speakers=2, language=en
-                                                                      │
-                                             "[Speaker A]: um, I was wondering..."
-                                                                      │
-                                                      ContextAgent (Orchestrate)
-                                                      knows: Carter's profile + scenario
-                                                                      │
-                                           ├── Carter fluent   → silent (empty string)
-                                           └── Carter hesitates → phrase_generation_agent
-                                                                  → safety_filter_agent
-                                                                  → JSON array → UI
+Carter mic      → AudioContext PCM16 → WebSocket source=carter    → AssemblyAI STT session 1 → "[Carter]: ..."
+Prof. Johnson mic → AudioContext PCM16 → WebSocket source=professor → AssemblyAI STT session 2 → "[Prof. Johnson]: ..."
+                                                                                                      │
+                                                                                         merged conversation history
+                                                                                                      │
+                                                                                         Carter turns → ContextAgent
+                                                                                                      │
+                                                                      ├── Carter fluent   → silent (empty string)
+                                                                      └── Carter hesitates → phrase_generation_agent
+                                                                                             → safety_filter_agent
+                                                                                             → JSON array → UI
 ```
 
-1. **Audio capture** — The browser captures microphone audio via `AudioContext` + `ScriptProcessorNode` (PCM16, 16 kHz, 4096-sample chunks) and streams raw binary frames to the server over WebSocket. No STT or hesitation logic runs in the browser.
+1. **Audio capture** — The browser lets the user select two microphone inputs. Carter's microphone and Prof. Johnson's microphone are captured as separate `AudioContext` + `ScriptProcessorNode` streams (PCM16, 16 kHz, 4096-sample chunks). No STT or hesitation logic runs in the browser.
 
-2. **AssemblyAI STT** — The server forwards each PCM16 frame to AssemblyAI's real-time streaming API (Universal-3 Pro model) over a persistent WebSocket connection (one per session). Connection parameters: `speaker_labels=true`, `max_speakers=2`, `language_code=en`. AssemblyAI returns speaker-labeled final transcripts on `end_of_turn`: `[Speaker A]: I was wondering...`
+2. **AssemblyAI STT** — The server opens two AssemblyAI real-time streaming WebSocket sessions, one per microphone source. CommCopilot does not rely on AssemblyAI speaker diarization for identity; transcripts are labeled from the source stream: `[Carter]: ...` and `[Prof. Johnson]: ...`.
 
-3. **ContextAgent** — Every labeled transcript chunk is sent to a single **ContextAgent** on Orchestrate, tagged with a per-session `X-IBM-THREAD-ID` so the agent sees the running conversation. ContextAgent has pre-loaded context about the student and session:
+3. **ContextAgent** — Transcript chunks from both sources are merged into one chronological conversation history. Carter chunks are sent to a single **ContextAgent** on Orchestrate, tagged with a per-session `X-IBM-THREAD-ID` and metadata including `current_user: Carter`, `ai_solution_user: Carter`, and `known_speakers: ["Carter", "Prof. Johnson"]`. ContextAgent has pre-loaded context about the student and session:
 
    **Student profile (built into agent instructions):**
    - Name: Carter Lee, international student living in the US
@@ -40,9 +37,10 @@ Microphone → AudioContext (PCM16, 16 kHz) → WebSocket (binary) → FastAPI
    - Carter's goal: understand his grade, ask how to improve, or request reconsideration
 
    On every chunk, ContextAgent:
-   - identifies **which speaker label is Carter** based on speech patterns and the student profile,
+   - trusts the source labels `[Carter]` and `[Prof. Johnson]`,
    - tracks **role / tone / current intent** as the conversation unfolds,
    - detects **hesitation** in Carter's speech only (filler words, elongated sounds, trailing sentences, repeated words, meta-questions),
+   - treats Prof. Johnson's speech as context only,
    - returns an **empty string** when Carter is fluent — the client sees nothing,
    - or invokes **`phrase_generation_agent`** and **`safety_filter_agent`** to produce 2–3 phrases that Carter would **naturally say next** to continue his current thought, specific to the situation.
 
@@ -61,7 +59,7 @@ All hesitation detection, phrase generation, and safety filtering happen on the 
 | Component | Technology |
 |---|---|
 | Backend | FastAPI + WebSocket |
-| Speech-to-Text | AssemblyAI Streaming v3 (Universal-3 Pro, speaker diarization, max 2 speakers) |
+| Speech-to-Text | Two AssemblyAI Streaming v3 sessions (Universal-3 Pro), one per mic source |
 | Agent Orchestration | IBM watsonx Orchestrate |
 | Auth | IBM Cloud IAM |
 | LLM | IBM watsonx Granite (via Orchestrate agents) |
@@ -73,7 +71,7 @@ Only **ContextAgent** is called from the server. The other two agents are config
 
 | Agent | Role |
 |---|---|
-| **ContextAgent** | Silent listener. Knows Carter's profile and the session scenario. Identifies Carter's speaker label, detects hesitation, invokes the other two agents, returns contextually relevant phrases or stays silent. |
+| **ContextAgent** | Silent listener. Knows Carter's profile and the session scenario. Uses fixed Carter/Prof. Johnson source labels, detects hesitation in Carter's speech, invokes the other two agents, returns contextually relevant phrases or stays silent. |
 | **phrase_generation_agent** | Generates 3 candidate phrases that Carter would naturally say next, given role, tone, and current intent. Called by ContextAgent as a collaborator. |
 | **safety_filter_agent** | Screens candidate phrases for appropriateness. Called by ContextAgent as a collaborator. |
 
@@ -86,13 +84,13 @@ Only **ContextAgent** is called from the server. The other two agents are config
 │   ├── config.py                # Environment variables and thresholds
 │   ├── session.py               # In-memory session state
 │   ├── orchestrate.py           # Orchestrate API client (IAM auth + call_context_listener)
-│   └── assemblyai_stt.py        # AssemblyAI real-time STT WebSocket client (per-session)
+│   └── assemblyai_stt.py        # AssemblyAI real-time STT WebSocket client (one per mic source)
 ├── server/
 │   └── app.py                   # FastAPI WebSocket endpoint
 ├── frontend/
 │   ├── index.html
 │   ├── style.css
-│   └── app.js                   # AudioContext PCM16 streaming + phrase/history/log rendering
+│   └── app.js                   # Dual-mic AudioContext PCM16 streaming + phrase/history/log rendering
 ├── tests/
 │   ├── conftest.py
 │   ├── test_session.py
@@ -199,9 +197,9 @@ source .venv/Scripts/activate   # Windows
 uvicorn server.app:app --reload
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in Chrome or Edge and press **Start Session**.
+Open [http://localhost:8000](http://localhost:8000) in Chrome or Edge, select two microphone inputs, and press **Start Session**.
 
-The server log will show `AssemblyAI STT connected` and `AssemblyAI session ID: ...` once the STT connection is established.
+The server log will show `AssemblyAI STT connected (Carter)` and `AssemblyAI STT connected (Prof. Johnson)` once both STT connections are established.
 
 ---
 

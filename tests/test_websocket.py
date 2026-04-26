@@ -71,6 +71,7 @@ def test_session_ready_after_start(client, stt_mock):
             msg = _setup_session(ws)
             assert msg["type"] == "session_ready"
             assert "phrase_auto_dismiss_s" in msg
+            assert stt_mock.connect.await_count == 2
 
 
 def test_error_when_credentials_missing(client):
@@ -112,3 +113,23 @@ def test_end_session_returns_recap(client, stt_mock):
             msg = _drain_until(ws, "recap")
             assert msg["type"] == "recap"
             assert "recap" in msg
+
+
+def test_audio_frames_route_to_source_stt_sessions(client):
+    carter_stt = _make_stt_mock()
+    professor_stt = _make_stt_mock()
+
+    with (
+        patch("server.app.AssemblyAISTTClient", side_effect=[carter_stt, professor_stt]),
+        patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
+    ):
+        with client.websocket_connect("/ws") as ws:
+            _setup_session(ws)
+            ws.send_bytes(bytes([1]) + b"carter-audio")
+            ws.send_bytes(bytes([2]) + b"professor-audio")
+            ws.send_json({"type": "end_session"})
+
+            _drain_until(ws, "recap")
+
+    carter_stt.send_audio.assert_awaited_once_with(b"carter-audio")
+    professor_stt.send_audio.assert_awaited_once_with(b"professor-audio")

@@ -102,3 +102,31 @@ async def test_listener_passes_thread_id():
         )
     assert "hello professor" in captured["prompt"]
     assert captured["thread_id"] == "tid-42"
+
+
+@pytest.mark.asyncio
+async def test_listener_prompt_includes_dual_mic_context():
+    captured = {}
+
+    async def mock_chat(agent_id, prompt, thread_id=None, warmup=False):
+        captured["prompt"] = prompt
+        return ""
+
+    with _mock_iam, patch("commcopilot.orchestrate._chat", side_effect=mock_chat):
+        await call_context_listener(
+            chunk="[Carter]: um I wanted to ask about my grade",
+            thread_id="tid-42",
+            phrases_used=[],
+            conversation_history=[
+                "[Prof. Johnson]: What can I help you with?",
+                "[Carter]: um I wanted to ask about my grade",
+            ],
+            current_user="Carter",
+            ai_solution_user="Carter",
+            known_speakers=["Carter", "Prof. Johnson"],
+        )
+
+    assert "current_user: Carter" in captured["prompt"]
+    assert "ai_solution_user: Carter" in captured["prompt"]
+    assert 'known_speakers: ["Carter", "Prof. Johnson"]' in captured["prompt"]
+    assert "[Prof. Johnson]: What can I help you with?" in captured["prompt"]

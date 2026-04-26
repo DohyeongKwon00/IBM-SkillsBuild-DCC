@@ -11,7 +11,18 @@
         <!-- Start screen -->
         <div id="start-screen">
             <h1>CommCopilot</h1>
-            <p>Press start to begin listening. The assistant will infer context from your conversation.</p>
+            <p>Select one microphone for Carter and one for Prof. Johnson.</p>
+            <div id="mic-selectors">
+                <label>
+                    Carter microphone
+                    <select id="carter-mic-select"></select>
+                </label>
+                <label>
+                    Prof. Johnson microphone
+                    <select id="professor-mic-select"></select>
+                </label>
+                <button id="refresh-mics-btn" type="button">Refresh Mics</button>
+            </div>
             <button id="start-btn">Start Session</button>
         </div>
 

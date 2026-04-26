@@ -1,11 +1,10 @@
 /**
  * CommCopilot Frontend
  *
- * The browser captures microphone audio via AudioContext (PCM16, 16 kHz)
- * and streams binary frames to the server over WebSocket. The server forwards
- * audio to AssemblyAI STT, which returns speaker-labeled transcripts.
- * ContextAgent then decides whether the student is hesitating and returns
- * phrase suggestions.
+ * The browser captures two microphones via AudioContext (PCM16, 16 kHz)
+ * and streams source-prefixed binary frames to the server over WebSocket.
+ * The server forwards each source to a separate AssemblyAI STT session and
+ * labels transcripts from the source stream.
  *
  * No STT or hesitation detection happens in the browser — it only captures and streams.
  */
@@ -13,11 +12,15 @@
 const WS_RECONNECT_DELAYS = [1000, 2000, 4000];
 const SAMPLE_RATE = 16000;
 const BUFFER_SIZE = 4096;  // ~256ms at 16 kHz
+const AUDIO_SOURCES = {
+    carter: { code: 1, label: "Carter" },
+    professor: { code: 2, label: "Prof. Johnson" },
+};
 
 let ws = null;
-let mediaStream = null;
-let audioContext = null;
-let scriptProcessor = null;
+const mediaStreams = {};
+const audioContexts = {};
+const scriptProcessors = {};
 let reconnectAttempt = 0;
 let dismissTimer = null;
 let isSessionActive = false;
@@ -27,6 +30,9 @@ let AUTO_DISMISS_MS = 5000;
 const startScreen = document.getElementById("start-screen");
 const sessionScreen = document.getElementById("session-screen");
 const startBtn = document.getElementById("start-btn");
+const refreshMicsBtn = document.getElementById("refresh-mics-btn");
+const carterMicSelect = document.getElementById("carter-mic-select");
+const professorMicSelect = document.getElementById("professor-mic-select");
 const statusIndicator = document.getElementById("status-indicator");
 const phraseContainer = document.getElementById("phrase-container");
 const selectedPhraseEl = document.getElementById("selected-phrase");
@@ -39,6 +45,60 @@ const phraseHistoryEl = document.getElementById("phrase-history");
 // tracks which phrases were selected, for history highlighting
 const selectedPhrases = new Set();
 
+// --- Microphone selection ---
+async function loadMicrophoneOptions() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        showError("Microphone device selection is not supported in this browser.");
+        return;
+    }
+
+    if (!window.isSecureContext) {
+        showError("Microphone access requires localhost or HTTPS.");
+        return;
+    }
+
+    let permissionStream = null;
+    try {
+        permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch (e) {
+        showError("Mic permission denied. Please allow microphone access, then refresh mics.");
+        return;
+    } finally {
+        if (permissionStream) {
+            permissionStream.getTracks().forEach((track) => track.stop());
+        }
+    }
+
+    let audioInputs = [];
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        audioInputs = devices.filter((device) => device.kind === "audioinput");
+    } catch (e) {
+        showError("Could not list microphone inputs.");
+        return;
+    }
+
+    populateMicSelect(carterMicSelect, audioInputs, 0);
+    populateMicSelect(professorMicSelect, audioInputs, Math.min(1, audioInputs.length - 1));
+
+    if (audioInputs.length < 2) {
+        showError("Two microphone inputs are required for dual-mic mode.");
+    } else {
+        hideError();
+    }
+}
+
+function populateMicSelect(select, devices, selectedIndex) {
+    select.innerHTML = "";
+    devices.forEach((device, index) => {
+        const option = document.createElement("option");
+        option.value = device.deviceId;
+        option.textContent = device.label || `Microphone ${index + 1}`;
+        if (index === selectedIndex) option.selected = true;
+        select.appendChild(option);
+    });
+}
+
 // --- Session start ---
 async function startSession() {
     if (!window.AudioContext && !window.webkitAudioContext) {
@@ -46,10 +106,23 @@ async function startSession() {
         return;
     }
 
+    const carterDeviceId = carterMicSelect.value;
+    const professorDeviceId = professorMicSelect.value;
+
+    if (!carterDeviceId || !professorDeviceId) {
+        showError("Please select microphones for both Carter and Prof. Johnson.");
+        return;
+    }
+    if (carterDeviceId === professorDeviceId) {
+        showError("Please select two different microphone inputs.");
+        return;
+    }
+
     try {
-        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        mediaStreams.carter = await getMicStream(carterDeviceId);
+        mediaStreams.professor = await getMicStream(professorDeviceId);
     } catch (e) {
-        showError("Mic permission denied. Please allow microphone access.");
+        showError("Mic permission denied or unavailable. Please allow both microphones.");
         return;
     }
 
@@ -58,6 +131,19 @@ async function startSession() {
     isSessionActive = true;
 
     connectWebSocket();
+}
+
+function getMicStream(deviceId) {
+    return navigator.mediaDevices.getUserMedia({
+        audio: {
+            deviceId: { exact: deviceId },
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+        },
+        video: false,
+    });
 }
 
 // --- WebSocket ---
@@ -78,7 +164,8 @@ function connectWebSocket() {
         if (msg.type === "session_ready") {
             if (msg.phrase_auto_dismiss_s) AUTO_DISMISS_MS = msg.phrase_auto_dismiss_s * 1000;
             statusIndicator.textContent = "Listening...";
-            startAudioStreaming();
+            startAudioStreaming("carter");
+            startAudioStreaming("professor");
 
         } else if (msg.type === "thinking") {
             statusIndicator.textContent = "Thinking...";
@@ -101,7 +188,7 @@ function connectWebSocket() {
             appendTranscriptLine(msg.text);
 
         } else if (msg.type === "error") {
-            showError(msg.message || "An error occurred.");
+            stopSessionAfterFatalError(msg.message || "An error occurred.");
         }
     };
 
@@ -128,13 +215,17 @@ function sendMessage(msg) {
     }
 }
 
-// --- Audio streaming (PCM16 via AudioContext -> AssemblyAI) ---
-function startAudioStreaming() {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    audioContext = new AC({ sampleRate: SAMPLE_RATE });
+// --- Audio streaming (PCM16 via AudioContext -> backend -> AssemblyAI) ---
+function startAudioStreaming(sourceId) {
+    stopAudioPipeline(sourceId);
 
-    const source = audioContext.createMediaStreamSource(mediaStream);
-    scriptProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+    const AC = window.AudioContext || window.webkitAudioContext;
+    const audioContext = new AC({ sampleRate: SAMPLE_RATE });
+    audioContexts[sourceId] = audioContext;
+
+    const source = audioContext.createMediaStreamSource(mediaStreams[sourceId]);
+    const scriptProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+    scriptProcessors[sourceId] = scriptProcessor;
 
     scriptProcessor.onaudioprocess = (e) => {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
@@ -144,11 +235,32 @@ function startAudioStreaming() {
             const s = Math.max(-1, Math.min(1, float32[i]));
             int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
-        ws.send(int16.buffer);
+        sendAudioFrame(sourceId, int16.buffer);
     };
 
     source.connect(scriptProcessor);
     scriptProcessor.connect(audioContext.destination);
+}
+
+function sendAudioFrame(sourceId, pcmBuffer) {
+    const source = AUDIO_SOURCES[sourceId];
+    if (!source) return;
+
+    const payload = new Uint8Array(1 + pcmBuffer.byteLength);
+    payload[0] = source.code;
+    payload.set(new Uint8Array(pcmBuffer), 1);
+    ws.send(payload.buffer);
+}
+
+function stopAudioPipeline(sourceId) {
+    if (scriptProcessors[sourceId]) {
+        scriptProcessors[sourceId].disconnect();
+        delete scriptProcessors[sourceId];
+    }
+    if (audioContexts[sourceId]) {
+        audioContexts[sourceId].close();
+        delete audioContexts[sourceId];
+    }
 }
 
 // --- Phrase display ---
@@ -253,7 +365,7 @@ document.getElementById("end-btn").onclick = () => {
     sendMessage({ type: "end_session" });
 };
 
-// --- Transcript display (speaker-labeled lines from AssemblyAI STT) ---
+// --- Transcript display (source-labeled lines from AssemblyAI STT) ---
 function appendTranscriptLine(text) {
     const line = document.createElement("div");
     line.textContent = text;
@@ -315,20 +427,23 @@ function hideError() {
     errorBar.style.display = "none";
 }
 
+function stopSessionAfterFatalError(message) {
+    isSessionActive = false;
+    statusIndicator.textContent = "Error";
+    statusIndicator.className = "";
+    showError(message);
+    cleanup();
+}
+
 // --- Cleanup ---
 function cleanup() {
-    if (scriptProcessor) {
-        scriptProcessor.disconnect();
-        scriptProcessor = null;
-    }
-    if (audioContext) {
-        audioContext.close();
-        audioContext = null;
-    }
-    if (mediaStream) {
-        mediaStream.getTracks().forEach((t) => t.stop());
-        mediaStream = null;
-    }
+    Object.keys(AUDIO_SOURCES).forEach((sourceId) => stopAudioPipeline(sourceId));
+
+    Object.values(mediaStreams).forEach((stream) => {
+        stream.getTracks().forEach((track) => track.stop());
+    });
+    Object.keys(mediaStreams).forEach((key) => delete mediaStreams[key]);
+
     if (ws) {
         ws.close();
         ws = null;
@@ -337,3 +452,5 @@ function cleanup() {
 
 // --- Init ---
 startBtn.onclick = () => startSession();
+refreshMicsBtn.onclick = () => loadMicrophoneOptions();
+loadMicrophoneOptions();
