@@ -253,7 +253,7 @@ document.getElementById("end-btn").onclick = () => {
     sendMessage({ type: "end_session" });
 };
 
-// --- Transcript display (speaker-labeled lines from Watson STT via server log) ---
+// --- Transcript display (speaker-labeled lines from AssemblyAI STT) ---
 function appendTranscriptLine(text) {
     const line = document.createElement("div");
     line.textContent = text;

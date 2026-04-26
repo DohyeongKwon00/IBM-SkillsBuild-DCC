@@ -1,9 +1,9 @@
 """FastAPI application with WebSocket endpoint for CommCopilot.
 
 Audio flow:
-    Browser captures mic audio via MediaRecorder (webm/opus, 250ms chunks).
-    Binary frames arrive over WebSocket and are forwarded to Watson STT.
-    Watson STT returns speaker-labeled transcripts, e.g. "[Speaker 0]: I was wondering..."
+    Browser captures mic audio via AudioContext (PCM16, 16 kHz chunks).
+    Binary frames arrive over WebSocket and are forwarded to AssemblyAI STT.
+    AssemblyAI returns speaker-labeled transcripts, e.g. "[Speaker A]: I was wondering..."
     Each final transcript is forwarded to ContextAgent (via Orchestrate), which
     detects hesitation and returns phrase suggestions when the student is struggling.
 """

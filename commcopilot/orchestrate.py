@@ -25,7 +25,6 @@ import httpx
 
 from commcopilot.config import (
     CONTEXT_AGENT_ID,
-    FALLBACK_PHRASES,
     ORCHESTRATE_API_KEY,
     ORCHESTRATE_TIMEOUT_S,
     ORCHESTRATE_URL,
