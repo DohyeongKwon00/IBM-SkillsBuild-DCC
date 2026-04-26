@@ -168,6 +168,7 @@ async def call_context_listener(
         "Carter wants to understand his grade and possibly ask how to improve or request reconsideration.\n"
         f"{used_hint}\n\n"
         "Apply your guidelines.\n"
+        "- If the speaker label is UNKNOWN, return an empty string immediately.\n"
         "- If Carter is speaking fluently, return an empty string.\n"
         "- If Carter is hesitating, analyze what he is trying to say right now based on "
         "the full conversation context and the scenario above. Invoke phrase_generation_agent "
