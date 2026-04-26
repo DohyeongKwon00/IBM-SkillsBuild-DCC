@@ -1,30 +1,30 @@
 # CommCopilot
 
-Real-time AI conversation assistant for international students. CommCopilot streams two separate microphone inputs to **AssemblyAI Speech to Text**, labels transcripts by source stream, and sends Carter's turns to a **ContextAgent** on IBM watsonx Orchestrate. The agent identifies hesitation in Carter's speech and surfaces contextually relevant phrase suggestions in real time.
+Real-time AI conversation assistant for international students. CommCopilot streams two separate microphone inputs to **AssemblyAI Speech to Text**, labels transcripts by source stream, and sends Speaker A's turns to a **ContextAgent** on IBM watsonx Orchestrate. The agent identifies hesitation in Speaker A's speech and surfaces contextually relevant phrase suggestions in real time.
 
 Built as part of the **IBM SkillsBuild AI Experiential Learning Lab**.
 
 ## How It Works
 
 ```
-Carter mic      → AudioContext PCM16 → WebSocket source=carter    → AssemblyAI STT session 1 → "[Carter]: ..."
-Prof. Johnson mic → AudioContext PCM16 → WebSocket source=professor → AssemblyAI STT session 2 → "[Prof. Johnson]: ..."
+Speaker A mic → AudioContext PCM16 → WebSocket source=speaker_a → AssemblyAI STT session 1 → "[Speaker A]: ..."
+Speaker B mic → AudioContext PCM16 → WebSocket source=speaker_b → AssemblyAI STT session 2 → "[Speaker B]: ..."
                                                                                                       │
                                                                                          merged conversation history
                                                                                                       │
-                                                                                         Carter turns → ContextAgent
+                                                                                         Speaker A turns → ContextAgent
                                                                                                       │
-                                                                      ├── Carter fluent   → silent (empty string)
-                                                                      └── Carter hesitates → phrase_generation_agent
+                                                                      ├── Speaker A fluent   → silent (empty string)
+                                                                      └── Speaker A hesitates → phrase_generation_agent
                                                                                              → safety_filter_agent
                                                                                              → JSON array → UI
 ```
 
-1. **Audio capture** — The browser lets the user select two microphone inputs. Carter's microphone and Prof. Johnson's microphone are captured as separate `AudioContext` + `ScriptProcessorNode` streams (PCM16, 16 kHz, 4096-sample chunks). No STT or hesitation logic runs in the browser.
+1. **Audio capture** — The browser lets the user select two microphone inputs. Speaker A's microphone and Speaker B's microphone are captured as separate `AudioContext` + `ScriptProcessorNode` streams (PCM16, 16 kHz, 4096-sample chunks). No STT or hesitation logic runs in the browser.
 
-2. **AssemblyAI STT** — The server opens two AssemblyAI real-time streaming WebSocket sessions, one per microphone source. CommCopilot does not rely on AssemblyAI speaker diarization for identity; transcripts are labeled from the source stream: `[Carter]: ...` and `[Prof. Johnson]: ...`.
+2. **AssemblyAI STT** — The server opens two AssemblyAI real-time streaming WebSocket sessions, one per microphone source. CommCopilot does not rely on AssemblyAI speaker diarization for identity; transcripts are labeled from the source stream: `[Speaker A]: ...` and `[Speaker B]: ...`.
 
-3. **ContextAgent** — Transcript chunks from both sources are merged into one chronological conversation history. Carter chunks are sent to a single **ContextAgent** on Orchestrate, tagged with a per-session `X-IBM-THREAD-ID` and metadata including `current_user: Carter`, `ai_solution_user: Carter`, and `known_speakers: ["Carter", "Prof. Johnson"]`. ContextAgent has pre-loaded context about the student and session:
+3. **ContextAgent** — Transcript chunks from both sources are merged into one chronological conversation history. Speaker A chunks are sent to a single **ContextAgent** on Orchestrate, tagged with a per-session `X-IBM-THREAD-ID` and metadata including `current_user: Speaker A`, `ai_solution_user: Speaker A`, and `known_speakers: ["Speaker A", "Speaker B"]`. ContextAgent has pre-loaded context about the student and session:
 
    **Student profile (built into agent instructions):**
    - Name: Carter Lee, international student living in the US
@@ -37,12 +37,12 @@ Prof. Johnson mic → AudioContext PCM16 → WebSocket source=professor → Asse
    - Carter's goal: understand his grade, ask how to improve, or request reconsideration
 
    On every chunk, ContextAgent:
-   - trusts the source labels `[Carter]` and `[Prof. Johnson]`,
+   - trusts the source labels `[Speaker A]` and `[Speaker B]`,
    - tracks **role / tone / current intent** as the conversation unfolds,
-   - detects **hesitation** in Carter's speech only (filler words, elongated sounds, trailing sentences, repeated words, meta-questions),
-   - treats Prof. Johnson's speech as context only,
-   - returns an **empty string** when Carter is fluent — the client sees nothing,
-   - or invokes **`phrase_generation_agent`** and **`safety_filter_agent`** to produce 2–3 phrases that Carter would **naturally say next** to continue his current thought, specific to the situation.
+   - detects **hesitation** in Speaker A's speech only (filler words, elongated sounds, trailing sentences, repeated words, meta-questions),
+   - treats Speaker B's speech as context only,
+   - returns an **empty string** when Speaker A is fluent — the client sees nothing,
+   - or invokes **`phrase_generation_agent`** and **`safety_filter_agent`** to produce 2–3 phrases that Speaker A would **naturally say next** to continue his current thought, specific to the situation.
 
 All hesitation detection, phrase generation, and safety filtering happen on the agent side.
 
@@ -50,7 +50,7 @@ All hesitation detection, phrase generation, and safety filtering happen on the 
 
 - **Live Transcript** — Speaker-labeled transcript lines appear in real time as AssemblyAI returns final results.
 - **Phrase cards** — When ContextAgent detects hesitation, 2–3 suggestion cards appear. They auto-dismiss after 5 seconds. Clicking a card highlights it as selected.
-- **Suggested Phrases History** — A persistent panel records every batch of suggestions shown during the session, grouped by time. Phrases Carter selected are marked with a checkmark (✓) in blue.
+- **Suggested Phrases History** — A persistent panel records every batch of suggestions shown during the session, grouped by time. Phrases Speaker A selected are marked with a checkmark (✓) in blue.
 - **Pipeline Log** — Full per-chunk agent activity log (prompt, raw output, parsed phrases) for debugging.
 - **Session Recap** — Summary shown when the session ends: hesitation count, phrases used.
 
@@ -71,8 +71,8 @@ Only **ContextAgent** is called from the server. The other two agents are config
 
 | Agent | Role |
 |---|---|
-| **ContextAgent** | Silent listener. Knows Carter's profile and the session scenario. Uses fixed Carter/Prof. Johnson source labels, detects hesitation in Carter's speech, invokes the other two agents, returns contextually relevant phrases or stays silent. |
-| **phrase_generation_agent** | Generates 3 candidate phrases that Carter would naturally say next, given role, tone, and current intent. Called by ContextAgent as a collaborator. |
+| **ContextAgent** | Silent listener. Knows Carter's profile and the session scenario. Uses fixed Speaker A/Speaker B source labels, detects hesitation in Speaker A's speech, invokes the other two agents, returns contextually relevant phrases or stays silent. |
+| **phrase_generation_agent** | Generates 3 candidate phrases that Speaker A would naturally say next, given role, tone, and current intent. Called by ContextAgent as a collaborator. |
 | **safety_filter_agent** | Screens candidate phrases for appropriateness. Called by ContextAgent as a collaborator. |
 
 ## Project Structure
@@ -199,7 +199,7 @@ uvicorn server.app:app --reload
 
 Open [http://localhost:8000](http://localhost:8000) in Chrome or Edge, select two microphone inputs, and press **Start Session**.
 
-The server log will show `AssemblyAI STT connected (Carter)` and `AssemblyAI STT connected (Prof. Johnson)` once both STT connections are established.
+The server log will show `AssemblyAI STT connected (Speaker A)` and `AssemblyAI STT connected (Speaker B)` once both STT connections are established.
 
 ---
 

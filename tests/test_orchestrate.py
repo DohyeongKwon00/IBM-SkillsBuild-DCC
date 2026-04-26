@@ -114,19 +114,19 @@ async def test_listener_prompt_includes_dual_mic_context():
 
     with _mock_iam, patch("commcopilot.orchestrate._chat", side_effect=mock_chat):
         await call_context_listener(
-            chunk="[Carter]: um I wanted to ask about my grade",
+            chunk="[Speaker A]: um I wanted to ask about my grade",
             thread_id="tid-42",
             phrases_used=[],
             conversation_history=[
-                "[Prof. Johnson]: What can I help you with?",
-                "[Carter]: um I wanted to ask about my grade",
+                "[Speaker B]: What can I help you with?",
+                "[Speaker A]: um I wanted to ask about my grade",
             ],
-            current_user="Carter",
-            ai_solution_user="Carter",
-            known_speakers=["Carter", "Prof. Johnson"],
+            current_user="Speaker A",
+            ai_solution_user="Speaker A",
+            known_speakers=["Speaker A", "Speaker B"],
         )
 
-    assert "current_user: Carter" in captured["prompt"]
-    assert "ai_solution_user: Carter" in captured["prompt"]
-    assert 'known_speakers: ["Carter", "Prof. Johnson"]' in captured["prompt"]
-    assert "[Prof. Johnson]: What can I help you with?" in captured["prompt"]
+    assert "current_user: Speaker A" in captured["prompt"]
+    assert "ai_solution_user: Speaker A" in captured["prompt"]
+    assert 'known_speakers: ["Speaker A", "Speaker B"]' in captured["prompt"]
+    assert "[Speaker B]: What can I help you with?" in captured["prompt"]

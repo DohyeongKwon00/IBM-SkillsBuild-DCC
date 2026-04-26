@@ -116,20 +116,20 @@ def test_end_session_returns_recap(client, stt_mock):
 
 
 def test_audio_frames_route_to_source_stt_sessions(client):
-    carter_stt = _make_stt_mock()
-    professor_stt = _make_stt_mock()
+    speaker_a_stt = _make_stt_mock()
+    speaker_b_stt = _make_stt_mock()
 
     with (
-        patch("server.app.AssemblyAISTTClient", side_effect=[carter_stt, professor_stt]),
+        patch("server.app.AssemblyAISTTClient", side_effect=[speaker_a_stt, speaker_b_stt]),
         patch("server.app.ASSEMBLYAI_API_KEY", "fake-key"),
     ):
         with client.websocket_connect("/ws") as ws:
             _setup_session(ws)
-            ws.send_bytes(bytes([1]) + b"carter-audio")
-            ws.send_bytes(bytes([2]) + b"professor-audio")
+            ws.send_bytes(bytes([1]) + b"speaker-a-audio")
+            ws.send_bytes(bytes([2]) + b"speaker-b-audio")
             ws.send_json({"type": "end_session"})
 
             _drain_until(ws, "recap")
 
-    carter_stt.send_audio.assert_awaited_once_with(b"carter-audio")
-    professor_stt.send_audio.assert_awaited_once_with(b"professor-audio")
+    speaker_a_stt.send_audio.assert_awaited_once_with(b"speaker-a-audio")
+    speaker_b_stt.send_audio.assert_awaited_once_with(b"speaker-b-audio")

@@ -13,8 +13,8 @@ const WS_RECONNECT_DELAYS = [1000, 2000, 4000];
 const SAMPLE_RATE = 16000;
 const BUFFER_SIZE = 4096;  // ~256ms at 16 kHz
 const AUDIO_SOURCES = {
-    carter: { code: 1, label: "Carter" },
-    professor: { code: 2, label: "Prof. Johnson" },
+    speakerA: { code: 1, label: "Speaker A" },
+    speakerB: { code: 2, label: "Speaker B" },
 };
 
 let ws = null;
@@ -31,8 +31,8 @@ const startScreen = document.getElementById("start-screen");
 const sessionScreen = document.getElementById("session-screen");
 const startBtn = document.getElementById("start-btn");
 const refreshMicsBtn = document.getElementById("refresh-mics-btn");
-const carterMicSelect = document.getElementById("carter-mic-select");
-const professorMicSelect = document.getElementById("professor-mic-select");
+const speakerAMicSelect = document.getElementById("speaker-a-mic-select");
+const speakerBMicSelect = document.getElementById("speaker-b-mic-select");
 const statusIndicator = document.getElementById("status-indicator");
 const phraseContainer = document.getElementById("phrase-container");
 const selectedPhraseEl = document.getElementById("selected-phrase");
@@ -78,8 +78,8 @@ async function loadMicrophoneOptions() {
         return;
     }
 
-    populateMicSelect(carterMicSelect, audioInputs, 0);
-    populateMicSelect(professorMicSelect, audioInputs, Math.min(1, audioInputs.length - 1));
+    populateMicSelect(speakerAMicSelect, audioInputs, 0);
+    populateMicSelect(speakerBMicSelect, audioInputs, Math.min(1, audioInputs.length - 1));
 
     if (audioInputs.length < 2) {
         showError("Two microphone inputs are required for dual-mic mode.");
@@ -106,21 +106,21 @@ async function startSession() {
         return;
     }
 
-    const carterDeviceId = carterMicSelect.value;
-    const professorDeviceId = professorMicSelect.value;
+    const speakerADeviceId = speakerAMicSelect.value;
+    const speakerBDeviceId = speakerBMicSelect.value;
 
-    if (!carterDeviceId || !professorDeviceId) {
-        showError("Please select microphones for both Carter and Prof. Johnson.");
+    if (!speakerADeviceId || !speakerBDeviceId) {
+        showError("Please select microphones for both Speaker A and Speaker B.");
         return;
     }
-    if (carterDeviceId === professorDeviceId) {
+    if (speakerADeviceId === speakerBDeviceId) {
         showError("Please select two different microphone inputs.");
         return;
     }
 
     try {
-        mediaStreams.carter = await getMicStream(carterDeviceId);
-        mediaStreams.professor = await getMicStream(professorDeviceId);
+        mediaStreams.speakerA = await getMicStream(speakerADeviceId);
+        mediaStreams.speakerB = await getMicStream(speakerBDeviceId);
     } catch (e) {
         showError("Mic permission denied or unavailable. Please allow both microphones.");
         return;
@@ -164,8 +164,8 @@ function connectWebSocket() {
         if (msg.type === "session_ready") {
             if (msg.phrase_auto_dismiss_s) AUTO_DISMISS_MS = msg.phrase_auto_dismiss_s * 1000;
             statusIndicator.textContent = "Listening...";
-            startAudioStreaming("carter");
-            startAudioStreaming("professor");
+            startAudioStreaming("speakerA");
+            startAudioStreaming("speakerB");
 
         } else if (msg.type === "thinking") {
             statusIndicator.textContent = "Thinking...";

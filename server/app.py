@@ -1,12 +1,12 @@
 """FastAPI application with WebSocket endpoint for CommCopilot.
 
 Audio flow:
-    Browser captures Carter and Prof. Johnson microphones as separate
+    Browser captures Speaker A and Speaker B microphones as separate
     AudioContext PCM16 streams.
     Binary frames arrive over WebSocket with a source prefix byte and are routed
     to separate AssemblyAI STT sessions.
     Each transcript is labeled by its source stream, merged into conversation
-    history, and Carter turns are forwarded to ContextAgent for phrase help.
+    history, and Speaker A turns are forwarded to ContextAgent for phrase help.
 """
 
 import asyncio
@@ -38,11 +38,11 @@ logger = logging.getLogger(__name__)
 sessions: dict[str, SessionState] = {}
 
 SOURCES = {
-    1: {"id": "carter", "speaker": "Carter"},
-    2: {"id": "professor", "speaker": "Prof. Johnson"},
+    1: {"id": "speaker_a", "speaker": "Speaker A"},
+    2: {"id": "speaker_b", "speaker": "Speaker B"},
 }
-CURRENT_USER = "Carter"
-KNOWN_SPEAKERS = ["Carter", "Prof. Johnson"]
+CURRENT_USER = "Speaker A"
+KNOWN_SPEAKERS = ["Speaker A", "Speaker B"]
 CROSS_SOURCE_DEDUP_WINDOW_S = 1.5
 
 

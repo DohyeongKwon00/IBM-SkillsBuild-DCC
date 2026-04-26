@@ -143,8 +143,8 @@ async def call_context_listener(
     thread_id: str,
     phrases_used: list[str],
     conversation_history: Optional[list[str]] = None,
-    current_user: str = "Carter",
-    ai_solution_user: str = "Carter",
+    current_user: str = "Speaker A",
+    ai_solution_user: str = "Speaker A",
     known_speakers: Optional[list[str]] = None,
     on_event: EventCallback = None,
 ) -> Optional[list[str]]:
@@ -159,7 +159,7 @@ async def call_context_listener(
         else ""
     )
 
-    speakers = known_speakers or ["Carter", "Prof. Johnson"]
+    speakers = known_speakers or ["Speaker A", "Speaker B"]
     history = "\n".join((conversation_history or [])[-10:])
     prompt = (
         f"current_user: {current_user}\n"
@@ -168,7 +168,7 @@ async def call_context_listener(
         f"Recent conversation:\n{history}\n"
         f"Transcript chunk: {chunk}\n"
         f"{used_hint}\n"
-        "Only generate suggestions for Carter. Prof. Johnson's speech is context only. "
+        "Only generate suggestions for Speaker A. Speaker B's speech is context only. "
         "Apply your guidelines and return empty string or JSON array of 2-3 phrases."
     )
 
