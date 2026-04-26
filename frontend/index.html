@@ -47,14 +47,20 @@
                 <div id="selected-phrase" style="display:none;"></div>
             </div>
 
-            <div class="panel">
-                <h3>Suggested Phrases History</h3>
+            <div class="panel" id="phrase-history-panel">
+                <button id="phrase-history-toggle-btn" class="panel-toggle" type="button" aria-expanded="false" aria-controls="phrase-history">
+                    <span>Suggested Phrases History</span>
+                    <span id="phrase-history-toggle-icon">Show All</span>
+                </button>
                 <div id="phrase-history"><span class="phrase-history-empty">No suggestions yet.</span></div>
             </div>
 
-            <div class="panel">
-                <h3>Pipeline Log</h3>
-                <div id="log-panel"></div>
+            <div class="panel" id="pipeline-log-panel">
+                <button id="log-toggle-btn" class="panel-toggle" type="button" aria-expanded="false" aria-controls="log-panel">
+                    <span>Pipeline Log</span>
+                    <span id="log-toggle-icon">Show</span>
+                </button>
+                <div id="log-panel" hidden></div>
             </div>
         </div>
 

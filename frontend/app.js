@@ -38,7 +38,11 @@ const errorBar = document.getElementById("error-bar");
 const inlineRecapEl = document.getElementById("inline-recap");
 const transcriptEl = document.getElementById("transcript-final");
 const logPanelEl = document.getElementById("log-panel");
+const logToggleBtn = document.getElementById("log-toggle-btn");
+const logToggleIcon = document.getElementById("log-toggle-icon");
 const phraseHistoryEl = document.getElementById("phrase-history");
+const phraseHistoryToggleBtn = document.getElementById("phrase-history-toggle-btn");
+const phraseHistoryToggleIcon = document.getElementById("phrase-history-toggle-icon");
 
 // tracks which phrases were selected, for history highlighting
 const selectedPhrases = new Set();
@@ -321,6 +325,24 @@ function appendPhraseHistory(phrases) {
     });
 
     phraseHistoryEl.appendChild(group);
+    updatePhraseHistoryVisibility();
+    phraseHistoryEl.scrollTop = phraseHistoryEl.scrollHeight;
+}
+
+function updatePhraseHistoryVisibility() {
+    const isExpanded = phraseHistoryToggleBtn.getAttribute("aria-expanded") === "true";
+    phraseHistoryEl.classList.toggle("expanded", isExpanded);
+    const groups = phraseHistoryEl.querySelectorAll(".phrase-history-group");
+    groups.forEach((group, index) => {
+        group.hidden = !isExpanded && index < groups.length - 1;
+    });
+}
+
+function togglePhraseHistory() {
+    const isExpanded = phraseHistoryToggleBtn.getAttribute("aria-expanded") === "true";
+    phraseHistoryToggleBtn.setAttribute("aria-expanded", String(!isExpanded));
+    phraseHistoryToggleIcon.textContent = isExpanded ? "Show All" : "Show Latest";
+    updatePhraseHistoryVisibility();
     phraseHistoryEl.scrollTop = phraseHistoryEl.scrollHeight;
 }
 
@@ -376,6 +398,16 @@ function appendTranscriptLine(text) {
 }
 
 // --- Pipeline log ---
+function togglePipelineLog() {
+    const isExpanded = logToggleBtn.getAttribute("aria-expanded") === "true";
+    logToggleBtn.setAttribute("aria-expanded", String(!isExpanded));
+    logPanelEl.hidden = isExpanded;
+    logToggleIcon.textContent = isExpanded ? "Show" : "Hide";
+    if (!isExpanded) {
+        logPanelEl.scrollTop = logPanelEl.scrollHeight;
+    }
+}
+
 function appendLog(msg) {
     const entry = document.createElement("div");
     entry.className = "log-entry";
@@ -454,4 +486,6 @@ function cleanup() {
 // --- Init ---
 startBtn.onclick = () => startSession();
 refreshMicsBtn.onclick = () => loadMicrophoneOptions();
+phraseHistoryToggleBtn.onclick = () => togglePhraseHistory();
+logToggleBtn.onclick = () => togglePipelineLog();
 loadMicrophoneOptions();
