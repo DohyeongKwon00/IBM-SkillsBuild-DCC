@@ -22,9 +22,7 @@ const mediaStreams = {};
 const audioContexts = {};
 const scriptProcessors = {};
 let reconnectAttempt = 0;
-let dismissTimer = null;
 let isSessionActive = false;
-let AUTO_DISMISS_MS = 5000;
 
 // --- DOM refs ---
 const startScreen = document.getElementById("start-screen");
@@ -162,7 +160,6 @@ function connectWebSocket() {
         const msg = JSON.parse(event.data);
 
         if (msg.type === "session_ready") {
-            if (msg.phrase_auto_dismiss_s) AUTO_DISMISS_MS = msg.phrase_auto_dismiss_s * 1000;
             statusIndicator.textContent = "Listening...";
             startAudioStreaming("speakerA");
             startAudioStreaming("speakerB");
@@ -264,6 +261,10 @@ function stopAudioPipeline(sourceId) {
 }
 
 // --- Phrase display ---
+function showPhraseEmptyState() {
+    phraseContainer.innerHTML = '<span class="phrase-empty">No active suggestions.</span>';
+}
+
 function showPhrases(phrases) {
     phraseContainer.innerHTML = "";
     statusIndicator.textContent = "Listening...";
@@ -273,26 +274,21 @@ function showPhrases(phrases) {
         const card = document.createElement("div");
         card.className = "phrase-card";
         card.textContent = phrase;
+        card.dataset.phrase = phrase;
         card.onclick = () => selectPhrase(phrase);
         phraseContainer.appendChild(card);
     });
 
     appendPhraseHistory(phrases);
-
-    if (dismissTimer) clearTimeout(dismissTimer);
-    dismissTimer = setTimeout(() => {
-        phraseContainer.innerHTML = "";
-    }, AUTO_DISMISS_MS);
 }
 
 function selectPhrase(phrase) {
-    if (dismissTimer) clearTimeout(dismissTimer);
-    phraseContainer.innerHTML = "";
     selectedPhraseEl.textContent = phrase;
     selectedPhraseEl.style.display = "block";
     sendMessage({ type: "phrase_selected", phrase });
     selectedPhrases.add(phrase);
     markPhraseUsedInHistory(phrase);
+    markActivePhraseSelected(phrase);
 
     setTimeout(() => {
         selectedPhraseEl.style.display = "none";
@@ -334,14 +330,19 @@ function markPhraseUsedInHistory(phrase) {
     });
 }
 
+function markActivePhraseSelected(phrase) {
+    phraseContainer.querySelectorAll(".phrase-card").forEach((el) => {
+        el.classList.toggle("selected", el.dataset.phrase === phrase);
+    });
+}
+
 // --- Recap ---
 function showRecap(recap, phrasesUsed) {
     isSessionActive = false;
 
     statusIndicator.textContent = "Ended";
     statusIndicator.className = "";
-    phraseContainer.innerHTML = "";
-    if (dismissTimer) clearTimeout(dismissTimer);
+    showPhraseEmptyState();
 
     let html = `<p>${recap}</p>`;
     if (phrasesUsed && phrasesUsed.length > 0) {

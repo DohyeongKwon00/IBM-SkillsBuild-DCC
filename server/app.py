@@ -22,7 +22,6 @@ from fastapi.staticfiles import StaticFiles
 
 from commcopilot.config import (
     ASSEMBLYAI_API_KEY,
-    PHRASE_AUTO_DISMISS_S,
     SESSION_TIMEOUT_S,
     TRANSCRIPT_WINDOW,
 )
@@ -190,10 +189,7 @@ async def websocket_endpoint(ws: WebSocket):
             await send({"type": "error", "message": f"Could not connect to AssemblyAI STT: {e}"})
             return
 
-        await send({
-            "type": "session_ready",
-            "phrase_auto_dismiss_s": PHRASE_AUTO_DISMISS_S,
-        })
+        await send({"type": "session_ready"})
 
         while True:
             # Receive either binary audio frames or text control messages.

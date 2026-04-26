@@ -70,7 +70,6 @@ def test_session_ready_after_start(client, stt_mock):
         with client.websocket_connect("/ws") as ws:
             msg = _setup_session(ws)
             assert msg["type"] == "session_ready"
-            assert "phrase_auto_dismiss_s" in msg
             assert stt_mock.connect.await_count == 2
 
 

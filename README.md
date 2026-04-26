@@ -49,7 +49,7 @@ All hesitation detection, phrase generation, and safety filtering happen on the 
 ## UI Features
 
 - **Live Transcript** — Speaker-labeled transcript lines appear in real time as AssemblyAI returns final results.
-- **Phrase cards** — When ContextAgent detects hesitation, 2–3 suggestion cards appear. They auto-dismiss after 5 seconds. Clicking a card highlights it as selected.
+- **Phrase cards** — When ContextAgent detects hesitation, 2–3 suggestion cards appear and stay visible until the next suggestion batch replaces them. Clicking a card highlights it as selected.
 - **Suggested Phrases History** — A persistent panel records every batch of suggestions shown during the session, grouped by time. Phrases Speaker A selected are marked with a checkmark (✓) in blue.
 - **Pipeline Log** — Full per-chunk agent activity log (prompt, raw output, parsed phrases) for debugging.
 - **Session Recap** — Summary shown when the session ends: hesitation count, phrases used.
@@ -228,7 +228,6 @@ Constants in `commcopilot/config.py`:
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `PHRASE_AUTO_DISMISS_S` | `5` | Seconds phrase cards stay visible before auto-dismissing |
 | `ORCHESTRATE_TIMEOUT_S` | `15.0` | Per-call timeout for ContextAgent |
 | `TRANSCRIPT_WINDOW` | `10` | Sliding window of recent transcript segments kept in session state |
 | `SESSION_TIMEOUT_S` | `1800` | Evict idle sessions after 30 min |

@@ -36,8 +36,26 @@ instructions: |
   - No hesitation detected in Speaker A's current chunk → return empty string. No exceptions.
   - Hesitation detected → invoke phrase_generation_agent with Speaker A's current intent,
     role (student/professor, formal), and recent transcript. Then invoke safety_filter_agent.
-    Return ONLY a JSON array of 2-3 phrases Speaker A would naturally say next to complete
-    his thought. No markdown, no prose.
+    Return ONLY a JSON array of 2-3 phrase strings Speaker A would naturally say next
+    to complete his thought.
+
+  ## Output contract
+  Your entire final response must be exactly one of these two forms:
+  1. Empty string, when no suggestion should be shown.
+  2. A raw JSON array of 2-3 strings, when Speaker A needs help.
+
+  Valid suggestion response example:
+  ["Could you explain how my exam was graded?", "I want to understand where I lost points.", "Could you suggest how I can improve?"]
+
+  Invalid responses:
+  - Any explanation before or after the JSON
+  - Markdown fences such as ```json
+  - Numbered or bulleted lists
+  - JSON objects such as {"phrases": [...]}
+  - Labels such as "Suggestions:" or "Here are..."
+  - A single string that is not a JSON array
+
+  If you are unsure whether Speaker A needs help, return empty string.
 guidelines:
   - display_name: "No hesitation — stay silent"
     condition: >
@@ -64,7 +82,8 @@ guidelines:
       intent, role, tone, and the most recent transcript segments. The phrases must
       be what Speaker A would naturally say next to complete his current thought —
       specific to the situation. Then invoke the safety_filter_agent collaborator
-      to verify them. Return ONLY a JSON array of 2-3 phrase strings. No markdown fences.
+      to verify them. Return ONLY a raw JSON array of 2-3 phrase strings. No markdown
+      fences, no prose, no labels, no JSON object wrapper.
 tools: []
 collaborators:
   - phrase_generation_agent_8910MS

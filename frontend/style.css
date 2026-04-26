@@ -13,10 +13,12 @@ button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; 
 #status-indicator { color: #34c759; font-weight: 600; }
 #status-indicator.processing { color: #ff9500; }
 #end-btn { background: #ff3b30; color: white; }
-#phrase-container { display: flex; flex-direction: column; gap: 8px; }
-.phrase-card { padding: 16px; background: white; border: 2px solid #007aff; border-radius: 12px; cursor: pointer; font-size: 16px; }
+#phrase-container { min-height: 48px; display: flex; flex-direction: column; gap: 8px; }
+.phrase-empty { color: #aaa; font-size: 13px; }
+.phrase-card { padding: 16px; background: #f9fbff; border: 2px solid #007aff; border-radius: 12px; cursor: pointer; font-size: 16px; }
 .phrase-card:hover { background: #007aff; color: white; }
-#selected-phrase { padding: 24px; background: #007aff; color: white; border-radius: 12px; font-size: 20px; text-align: center; margin-top: 20px; }
+.phrase-card.selected { background: #007aff; color: white; }
+#selected-phrase { padding: 16px; background: #007aff; color: white; border-radius: 12px; font-size: 16px; text-align: center; margin-top: 12px; }
 #error-bar { background: #ff3b30; color: white; padding: 12px; border-radius: 8px; margin-top: 12px; }
 #inline-recap { margin-top: 16px; background: #eef6ff; border: 1px solid #c7dcff; border-radius: 12px; padding: 14px 16px; }
 #inline-recap p { color: #333; margin-bottom: 8px; }
@@ -37,7 +39,7 @@ button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; 
 .phrase-history-time { font-size: 11px; color: #888; background: #f9f9f9; padding: 4px 10px; border-bottom: 1px solid #e5e5e5; }
 .phrase-history-item { padding: 7px 10px; font-size: 14px; color: #333; border-bottom: 1px solid #f0f0f0; }
 .phrase-history-item:last-child { border-bottom: none; }
-.phrase-history-item.used { color: #007aff; font-weight: 500; }
+.phrase-history-item.used { background: #dff7e8; color: #126b35; font-weight: 600; }
 .phrase-history-item.used::after { content: " ✓"; font-size: 11px; }
 
 #log-panel { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; max-height: 360px; overflow-y: auto; background: #0f1115; color: #d4d4d4; border-radius: 8px; padding: 10px; }
