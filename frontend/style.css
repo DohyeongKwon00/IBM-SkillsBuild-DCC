@@ -31,8 +31,25 @@ button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; 
 .panel h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: #888; margin-bottom: 10px; }
 .panel-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; padding: 0; background: transparent; color: #888; font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
 
-#live-transcript { min-height: 48px; font-size: 15px; line-height: 1.5; max-height: 180px; overflow-y: auto; }
-#transcript-final { color: #222; }
+#live-transcript { min-height: 80px; max-height: 540px; overflow-y: auto; padding: 4px 0; }
+#transcript-final { display: flex; flex-direction: column; gap: 10px; }
+
+.chat-message { display: flex; flex-direction: column; max-width: 78%; }
+.chat-message.speaker-a { align-self: flex-end; align-items: flex-end; }
+.chat-message.speaker-b { align-self: flex-start; align-items: flex-start; }
+.chat-speaker-label { font-size: 11px; color: #888; font-weight: 600; margin-bottom: 3px; }
+.chat-bubble { padding: 10px 14px; border-radius: 18px; font-size: 15px; line-height: 1.4; word-break: break-word; }
+.speaker-a .chat-bubble { background: #007aff; color: white; border-bottom-right-radius: 4px; }
+.speaker-a .chat-bubble.phrase-selected { background: #ff2d78; }
+.speaker-b .chat-bubble { background: #e5e5ea; color: #222; border-bottom-left-radius: 4px; }
+
+.hesitation-block { align-self: center; display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; }
+.hesitation-notice { background: #fff8e1; color: #7a5c00; border: 1px solid #ffc107; border-radius: 12px; padding: 4px 14px; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+.chat-phrase-cards { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+.chat-phrase-card { padding: 10px 14px; background: #fff0f5; border: 2px solid #ff2d78; border-radius: 12px; cursor: pointer; font-size: 14px; text-align: center; color: #c0145a; transition: background 0.15s, color 0.15s; }
+.chat-phrase-card:hover { background: #ff2d78; color: white; }
+.chat-phrase-card.selected { background: #ff2d78; color: white; border-color: #ff2d78; }
+.chat-phrase-card.dismissed { display: none; }
 
 #phrase-history { margin-top: 10px; max-height: 240px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
 #phrase-history.expanded { max-height: none; overflow-y: visible; }

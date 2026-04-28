@@ -177,6 +177,7 @@ function connectWebSocket() {
             statusIndicator.className = "";
 
         } else if (msg.type === "phrases") {
+            appendHesitationBlock(msg.phrases);
             showPhrases(msg.phrases);
 
         } else if (msg.type === "log") {
@@ -388,11 +389,85 @@ document.getElementById("end-btn").onclick = () => {
     sendMessage({ type: "end_session" });
 };
 
-// --- Transcript display (source-labeled lines from AssemblyAI STT) ---
+// --- Transcript display (chat bubble layout: Speaker A right, Speaker B left) ---
 function appendTranscriptLine(text) {
-    const line = document.createElement("div");
-    line.textContent = text;
-    transcriptEl.appendChild(line);
+    const match = text.match(/^\[(.+?)\]:\s*(.+)$/);
+    const wrapper = document.createElement("div");
+
+    if (match) {
+        const speakerLabel = match[1];
+        const messageText = match[2];
+        const isUserSpeaker = speakerLabel === "Speaker A";
+        wrapper.className = `chat-message ${isUserSpeaker ? "speaker-a" : "speaker-b"}`;
+
+        const label = document.createElement("div");
+        label.className = "chat-speaker-label";
+        label.textContent = speakerLabel;
+
+        const bubble = document.createElement("div");
+        bubble.className = "chat-bubble";
+        bubble.textContent = messageText;
+
+        wrapper.appendChild(label);
+        wrapper.appendChild(bubble);
+    } else {
+        wrapper.className = "chat-message";
+        wrapper.textContent = text;
+    }
+
+    transcriptEl.appendChild(wrapper);
+    const parent = document.getElementById("live-transcript");
+    parent.scrollTop = parent.scrollHeight;
+}
+
+function appendHesitationBlock(phrases) {
+    const block = document.createElement("div");
+    block.className = "hesitation-block";
+
+    const notice = document.createElement("div");
+    notice.className = "hesitation-notice";
+    notice.textContent = "Hesitation detected";
+    block.appendChild(notice);
+
+    const cards = document.createElement("div");
+    cards.className = "chat-phrase-cards";
+    phrases.forEach((phrase) => {
+        const card = document.createElement("div");
+        card.className = "chat-phrase-card";
+        card.textContent = phrase;
+        card.dataset.phrase = phrase;
+        card.onclick = () => {
+            selectPhrase(phrase);
+            cards.querySelectorAll(".chat-phrase-card").forEach((c) => {
+                c.classList.add("dismissed");
+            });
+            appendSelectedPhraseAsChatBubble(phrase);
+        };
+        cards.appendChild(card);
+    });
+    block.appendChild(cards);
+
+    transcriptEl.appendChild(block);
+    const parent = document.getElementById("live-transcript");
+    parent.scrollTop = parent.scrollHeight;
+}
+
+function appendSelectedPhraseAsChatBubble(phrase) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "chat-message speaker-a";
+
+    const label = document.createElement("div");
+    label.className = "chat-speaker-label";
+    label.textContent = "Speaker A";
+
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble phrase-selected";
+    bubble.textContent = phrase;
+
+    wrapper.appendChild(label);
+    wrapper.appendChild(bubble);
+    transcriptEl.appendChild(wrapper);
+
     const parent = document.getElementById("live-transcript");
     parent.scrollTop = parent.scrollHeight;
 }
