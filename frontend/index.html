@@ -32,7 +32,7 @@
                 </div>
             </div>
 
-            <section class="recent" id="recent-section" style="display:none;">
+            <section class="recent" id="recent-section">
                 <div class="recent-head">
                     <span class="section-label">RECENT</span>
                     <a href="#" class="header-link" id="all-sessions-link">All sessions →</a>
@@ -95,6 +95,19 @@
 
             <div id="live-transcript">
                 <div id="transcript-final"></div>
+            </div>
+        </section>
+
+        <!-- ========== SESSIONS LIST SCREEN ========== -->
+        <section id="sessions-screen" class="screen sessions-screen" style="display:none;">
+            <header class="sessions-header">
+                <button class="back-btn" id="sessions-back-btn" type="button" aria-label="Back">‹</button>
+                <h2 class="sessions-title">Sessions</h2>
+                <span class="sessions-saved" id="sessions-saved-count">6 saved</span>
+            </header>
+
+            <div class="sessions-list" id="sessions-list">
+                <!-- rows injected by JS -->
             </div>
         </section>
 
