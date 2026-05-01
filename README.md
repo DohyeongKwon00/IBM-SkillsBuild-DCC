@@ -15,8 +15,8 @@ Speaker B mic → AudioContext PCM16 → WebSocket source=speaker_b → Assembly
                                                                                          Speaker A turns → ContextAgent
                                                                                                       │
                                                                       ├── Speaker A fluent   → silent (empty string)
-                                                                      └── Speaker A hesitates → phrase_generation_agent
-                                                                                             → safety_filter_agent
+                                                                      └── Speaker A hesitates → PhraseAgent
+                                                                                             → SafetyAgent
                                                                                              → JSON array → UI
 ```
 
@@ -42,17 +42,18 @@ Speaker B mic → AudioContext PCM16 → WebSocket source=speaker_b → Assembly
    - detects **hesitation** in Speaker A's speech only (filler words, elongated sounds, trailing sentences, repeated words, meta-questions),
    - treats Speaker B's speech as context only,
    - returns an **empty string** when Speaker A is fluent — the client sees nothing,
-   - or invokes **`phrase_generation_agent`** and **`safety_filter_agent`** to produce 2–3 phrases that Speaker A would **naturally say next** to continue his current thought, specific to the situation.
+   - or invokes **PhraseAgent** and **SafetyAgent** to produce 2–3 phrases that Speaker A would **naturally say next** to continue his current thought, specific to the situation.
 
 All hesitation detection, phrase generation, and safety filtering happen on the agent side.
 
 ## UI Features
 
-- **Live Transcript** — Speaker-labeled transcript lines appear in real time as AssemblyAI returns final results.
-- **Phrase cards** — When ContextAgent detects hesitation, 2–3 suggestion cards appear and stay visible until the next suggestion batch replaces them. Clicking a card highlights it as selected.
-- **Suggested Phrases History** — A persistent panel records every batch of suggestions shown during the session, grouped by time. Phrases Speaker A selected are marked with a checkmark (✓) in blue.
-- **Pipeline Log** — Full per-chunk agent activity log (prompt, raw output, parsed phrases) for debugging.
-- **Session Recap** — Summary shown when the session ends: hesitation count, phrases used.
+- **Branded home screen** — Start a session with the current microphone selections, open microphone settings, or view recent saved-session mockups.
+- **Microphone settings modal** — Configure Speaker A and Speaker B inputs only when needed via **Configure microphones**.
+- **Live chat transcript** — Speaker-labeled transcript bubbles appear in real time as AssemblyAI returns final results.
+- **Phrase cards** — When ContextAgent detects hesitation, 2–3 suggestion cards appear inline. Clicking a card marks it selected and inserts it as a Speaker A chat bubble.
+- **Automatic phrase matching** — If Speaker A speaks a suggested phrase, the active suggestion group is marked selected.
+- **Session recap** — Summary shown when the session ends: duration, turn count, hesitation count, and phrases used.
 
 ## Tech Stack
 
@@ -67,19 +68,21 @@ All hesitation detection, phrase generation, and safety filtering happen on the 
 
 ## Agents
 
-Only **ContextAgent** is called from the server. The other two agents are configured as collaborators of ContextAgent inside the Orchestrate web UI.
+Only **ContextAgent** is called from the server. The other two agents are configured/imported as collaborators of ContextAgent inside watsonx Orchestrate.
 
 | Agent | Role |
 |---|---|
 | **ContextAgent** | Silent listener. Knows Carter's profile and the session scenario. Uses fixed Speaker A/Speaker B source labels, detects hesitation in Speaker A's speech, invokes the other two agents, returns contextually relevant phrases or stays silent. |
-| **phrase_generation_agent** | Generates 3 candidate phrases that Speaker A would naturally say next, given role, tone, and current intent. Called by ContextAgent as a collaborator. |
-| **safety_filter_agent** | Screens candidate phrases for appropriateness. Called by ContextAgent as a collaborator. |
+| **PhraseAgent** | Generates 3 candidate phrases that Speaker A would naturally say next, given role, tone, and current intent. Called by ContextAgent as a collaborator. |
+| **SafetyAgent** | Screens candidate phrases for appropriateness. Called by ContextAgent as a collaborator. |
 
 ## Project Structure
 
 ```
 ├── agents/
-│   └── context_agent.yaml       # ContextAgent definition (profile + scenario + instructions)
+│   ├── context_agent.yaml       # ContextAgent definition (profile + scenario + instructions)
+│   ├── phrase_agent.yaml        # PhraseAgent definition
+│   └── safety_agent.yaml        # SafetyAgent definition
 ├── commcopilot/
 │   ├── config.py                # Environment variables and thresholds
 │   ├── session.py               # In-memory session state
@@ -88,9 +91,10 @@ Only **ContextAgent** is called from the server. The other two agents are config
 ├── server/
 │   └── app.py                   # FastAPI WebSocket endpoint
 ├── frontend/
+│   ├── CommCopilot_Logo.png
 │   ├── index.html
 │   ├── style.css
-│   └── app.js                   # Dual-mic AudioContext PCM16 streaming + phrase/history/log rendering
+│   └── app.js                   # Dual-mic AudioContext PCM16 streaming + chat UI rendering
 ├── tests/
 │   ├── conftest.py
 │   ├── test_session.py
@@ -111,7 +115,7 @@ Only **ContextAgent** is called from the server. The other two agents are config
 - AssemblyAI account (free tier works) — get API key at [assemblyai.com](https://www.assemblyai.com/dashboard)
 - IBM Cloud account with:
   - watsonx Orchestrate instance
-  - `phrase_generation_agent` and `safety_filter_agent` already created in Orchestrate and configured as collaborators of ContextAgent
+  - `PhraseAgent` and `SafetyAgent` imported into Orchestrate and configured as collaborators of ContextAgent
 
 ### 1. Clone and create virtual environment
 
@@ -119,9 +123,9 @@ Only **ContextAgent** is called from the server. The other two agents are config
 git clone <repo-url>
 cd IBM-SkillsBuild-DCC
 
-py -3.13 -m venv .venv
-source .venv/Scripts/activate      # Windows
-# source .venv/bin/activate        # Mac/Linux
+python3 -m venv .venv
+source .venv/bin/activate          # Mac/Linux
+# .venv\Scripts\activate           # Windows PowerShell
 ```
 
 ### 2. Install dependencies
@@ -156,7 +160,7 @@ CONTEXT_AGENT_ID=
 
 ---
 
-## Importing ContextAgent into Orchestrate
+## Importing Agents into Orchestrate
 
 **1. Connect the CLI:**
 ```bash
@@ -164,18 +168,24 @@ orchestrate env add -n commcopilot -u <ORCHESTRATE_URL> --type ibm_iam
 orchestrate env activate commcopilot
 ```
 
-**2. Verify collaborator agents exist:**
+**2. Import the collaborator agents first:**
 ```bash
-orchestrate agents list
-# must show phrase_generation_agent and safety_filter_agent
+orchestrate agents import -f agents/phrase_agent.yaml
+orchestrate agents import -f agents/safety_agent.yaml
 ```
 
-**3. Import ContextAgent:**
+**3. Verify collaborator agents exist:**
+```bash
+orchestrate agents list
+# must show PhraseAgent and SafetyAgent
+```
+
+**4. Import ContextAgent:**
 ```bash
 orchestrate agents import -f agents/context_agent.yaml
 ```
 
-**4. Get the agent ID and set it in `.env`:**
+**5. Get the agent ID and set it in `.env`:**
 ```bash
 orchestrate agents list
 ```
@@ -191,13 +201,13 @@ CONTEXT_AGENT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 
 ```bash
 # activate venv first if not already active
-source .venv/Scripts/activate   # Windows
-# source .venv/bin/activate     # Mac/Linux
+source .venv/bin/activate       # Mac/Linux
+# .venv\Scripts\activate        # Windows PowerShell
 
 uvicorn server.app:app --reload
 ```
 
-Open [http://localhost:8000](http://localhost:8000) in Chrome or Edge, select two microphone inputs, and press **Start Session**.
+Open [http://localhost:8000](http://localhost:8000) in Chrome or Edge. Use **Configure microphones** to choose Speaker A and Speaker B inputs when needed, then press **Start Session** to begin with the current selections.
 
 The server log will show `AssemblyAI STT connected (Speaker A)` and `AssemblyAI STT connected (Speaker B)` once both STT connections are established.
 
