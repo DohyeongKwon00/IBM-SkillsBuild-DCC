@@ -3,70 +3,173 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CommCopilot</title>
+    <title>CommCopilot — AI Conversation Copilot</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div id="app">
-        <!-- Start screen -->
-        <div id="start-screen">
-            <h1>CommCopilot</h1>
-            <p>Select one microphone for Speaker A and one for Speaker B.</p>
-            <div id="mic-selectors">
-                <label>
-                    Speaker A microphone
-                    <select id="speaker-a-mic-select"></select>
-                </label>
-                <label>
-                    Speaker B microphone
-                    <select id="speaker-b-mic-select"></select>
-                </label>
-                <button id="refresh-mics-btn" type="button">Refresh Mics</button>
-            </div>
-            <button id="start-btn">Start Session</button>
-        </div>
 
-        <!-- Active Session -->
-        <div id="session-screen" style="display:none;">
-            <div id="status-bar">
-                <span id="status-indicator">Listening...</span>
-                <button id="end-btn">End Session</button>
-            </div>
-            <div id="inline-recap" style="display:none;"></div>
+        <!-- ========== HOME SCREEN ========== -->
+        <section id="home-screen" class="screen home-screen">
+            <header class="brand-header">
+                <div class="brand-block">
+                    <img src="/static/CommCopilot_Logo.png" alt="CommCopilot — AI Conversation Copilot" class="brand-logo brand-logo-lg">
+                    <p class="brand-tag">AI CONVERSATION COPILOT</p>
+                </div>
+                <a href="#" class="header-link" id="all-sessions-link-top">Sessions</a>
+            </header>
 
-            <div class="panel">
-                <h3>Live Transcript</h3>
-                <div id="live-transcript">
-                    <div id="transcript-final"></div>
+            <div class="hero">
+                <h2 class="hero-title">Ready when<br>you are.</h2>
+                <p class="hero-sub">Real-time hesitation detection and<br>response suggestions for your college life.</p>
+
+                <div class="hero-actions">
+                    <button id="start-btn" class="btn btn-primary btn-lg">Start Session</button>
+                    <button id="configure-mics-btn" class="btn btn-ghost">Configure microphones</button>
                 </div>
             </div>
 
-            <div class="panel">
-                <h3>Suggested Phrases</h3>
-                <div id="phrase-container"><span class="phrase-empty">No active suggestions.</span></div>
-                <div id="selected-phrase" style="display:none;"></div>
-            </div>
-
-            <div class="panel" id="phrase-history-panel">
-                <button id="phrase-history-toggle-btn" class="panel-toggle" type="button" aria-expanded="false" aria-controls="phrase-history">
-                    <span>Suggested Phrases History</span>
-                    <span id="phrase-history-toggle-icon">Show All</span>
+            <section class="recent" id="recent-section">
+                <div class="recent-head">
+                    <span class="section-label">RECENT</span>
+                    <a href="#" class="header-link" id="all-sessions-link">All sessions →</a>
+                </div>
+                <button class="recent-card" id="recent-card" type="button">
+                    <div class="recent-quote" id="recent-quote">"I wanted to discuss the budget for…</div>
+                    <div class="recent-meta">
+                        <span class="hint-chip" id="recent-hint">› 1 hint</span>
+                        <span class="recent-date" id="recent-date">Apr 29, 4:36 PM · 0:05</span>
+                    </div>
                 </button>
-                <div id="phrase-history"><span class="phrase-history-empty">No suggestions yet.</span></div>
-            </div>
+            </section>
+        </section>
 
-            <div class="panel" id="pipeline-log-panel">
-                <button id="log-toggle-btn" class="panel-toggle" type="button" aria-expanded="false" aria-controls="log-panel">
-                    <span>Pipeline Log</span>
-                    <span id="log-toggle-icon">Show</span>
-                </button>
-                <div id="log-panel" hidden></div>
+        <!-- ========== MIC SETTINGS MODAL ========== -->
+        <div id="mic-modal" class="modal" style="display:none;" aria-hidden="true">
+            <div class="modal-backdrop" data-close-modal></div>
+            <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="mic-modal-title">
+                <div class="modal-head">
+                    <div>
+                        <h3 id="mic-modal-title">Microphone Settings</h3>
+                        <p class="muted">Assign inputs for each speaker</p>
+                    </div>
+                    <button class="icon-btn" data-close-modal aria-label="Close">×</button>
+                </div>
+
+                <div class="speaker-row">
+                    <div class="speaker-avatar avatar-a">A</div>
+                    <div class="speaker-row-body">
+                        <div class="speaker-row-label">Speaker A <span class="muted">— You</span></div>
+                        <select id="speaker-a-mic-select" class="mic-select"></select>
+                    </div>
+                </div>
+
+                <div class="speaker-row">
+                    <div class="speaker-avatar avatar-b">B</div>
+                    <div class="speaker-row-body">
+                        <div class="speaker-row-label">Speaker B <span class="muted">— Them</span></div>
+                        <select id="speaker-b-mic-select" class="mic-select"></select>
+                    </div>
+                </div>
+
+                <button id="refresh-mics-btn" type="button" class="link-btn">Refresh devices</button>
+                <button id="modal-start-btn" class="btn btn-primary btn-lg btn-block">Start Session</button>
             </div>
         </div>
 
-        <!-- Error -->
+        <!-- ========== SESSION SCREEN ========== -->
+        <section id="session-screen" class="screen session-screen" style="display:none;">
+            <header class="session-header">
+                <img src="/static/CommCopilot_Logo.png" alt="CommCopilot" class="brand-logo brand-logo-sm">
+
+                <div id="status-indicator" class="status-pill status-listening">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Listening</span>
+                </div>
+
+                <button id="end-btn" class="btn btn-end">End Session</button>
+            </header>
+
+            <div id="live-transcript">
+                <div id="transcript-final"></div>
+            </div>
+        </section>
+
+        <!-- ========== SESSIONS LIST SCREEN ========== -->
+        <section id="sessions-screen" class="screen sessions-screen" style="display:none;">
+            <header class="sessions-header">
+                <button class="back-btn" id="sessions-back-btn" type="button" aria-label="Back">‹</button>
+                <h2 class="sessions-title">Sessions</h2>
+                <span class="sessions-saved" id="sessions-saved-count">6 saved</span>
+            </header>
+
+            <div class="sessions-list" id="sessions-list">
+                <!-- rows injected by JS -->
+            </div>
+        </section>
+
+        <!-- ========== RECAP SCREEN ========== -->
+        <section id="recap-screen" class="screen recap-screen" style="display:none;">
+            <header class="brand-header recap-header">
+                <img src="/static/CommCopilot_Logo.png" alt="CommCopilot" class="brand-logo brand-logo-md">
+            </header>
+
+            <div class="recap-body">
+                <div class="recap-check" aria-hidden="true">
+                    <svg viewBox="0 0 112 112" width="112" height="112" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="56" cy="56" r="54" fill="none" stroke="currentColor" stroke-width="3"/>
+                        <path d="M34 58 L50 74 L80 42" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                </div>
+
+                <p class="recap-eyebrow">SESSION COMPLETE</p>
+                <h2 class="recap-title">conversation.</h2>
+                <div class="recap-duration" id="recap-duration">0 : 00</div>
+
+                <p class="recap-summary" id="recap-summary"></p>
+
+                <div class="stat-grid">
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-turns">0</div>
+                        <div class="stat-label">TURNS</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-hesitations">0</div>
+                        <div class="stat-label">HESITATIONS</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value" id="stat-suggestions">0</div>
+                        <div class="stat-label">SUGGESTIONS USED</div>
+                    </div>
+                    <div class="stat-card stat-card-icon">
+                        <div class="stat-value-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" width="28" height="28" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M5 12 L10 17 L19 7" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+                            </svg>
+                        </div>
+                        <div class="stat-label">SAVED</div>
+                    </div>
+                </div>
+
+                <div class="recap-phrases" id="recap-phrases" style="display:none;">
+                    <h4>Phrases you used</h4>
+                    <ul id="recap-phrases-list"></ul>
+                </div>
+
+                <div class="recap-actions">
+                    <button id="restart-btn" class="btn btn-primary btn-lg btn-block">New Session</button>
+                    <button id="home-btn" class="btn btn-ghost btn-block">Back to Home</button>
+                </div>
+            </div>
+        </section>
+
+        <!-- ========== ERROR BAR ========== -->
         <div id="error-bar" style="display:none;"></div>
     </div>
+
     <script src="/static/app.js"></script>
 </body>
 </html>

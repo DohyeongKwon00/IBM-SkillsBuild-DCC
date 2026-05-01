@@ -1,4 +1,4 @@
-/**
+/*
  * CommCopilot Frontend
  *
  * The browser captures two microphones via AudioContext (PCM16, 16 kHz)
@@ -23,29 +23,61 @@ const audioContexts = {};
 const scriptProcessors = {};
 let reconnectAttempt = 0;
 let isSessionActive = false;
+let activeSuggestionGroup = null;
+
+// Session metrics for the recap screen
+let sessionMetrics = {
+    startedAt: null,
+    turns: 0,
+    suggestionsUsed: 0,
+    hesitations: 0,
+};
 
 // --- DOM refs ---
-const startScreen = document.getElementById("start-screen");
+const homeScreen = document.getElementById("home-screen");
 const sessionScreen = document.getElementById("session-screen");
+const recapScreen = document.getElementById("recap-screen");
+
 const startBtn = document.getElementById("start-btn");
+const configureMicsBtn = document.getElementById("configure-mics-btn");
+const modalStartBtn = document.getElementById("modal-start-btn");
 const refreshMicsBtn = document.getElementById("refresh-mics-btn");
 const speakerAMicSelect = document.getElementById("speaker-a-mic-select");
 const speakerBMicSelect = document.getElementById("speaker-b-mic-select");
-const statusIndicator = document.getElementById("status-indicator");
-const phraseContainer = document.getElementById("phrase-container");
-const selectedPhraseEl = document.getElementById("selected-phrase");
-const errorBar = document.getElementById("error-bar");
-const inlineRecapEl = document.getElementById("inline-recap");
-const transcriptEl = document.getElementById("transcript-final");
-const logPanelEl = document.getElementById("log-panel");
-const logToggleBtn = document.getElementById("log-toggle-btn");
-const logToggleIcon = document.getElementById("log-toggle-icon");
-const phraseHistoryEl = document.getElementById("phrase-history");
-const phraseHistoryToggleBtn = document.getElementById("phrase-history-toggle-btn");
-const phraseHistoryToggleIcon = document.getElementById("phrase-history-toggle-icon");
 
-// tracks which phrases were selected, for history highlighting
-const selectedPhrases = new Set();
+const micModal = document.getElementById("mic-modal");
+
+const statusIndicator = document.getElementById("status-indicator");
+const statusText = statusIndicator.querySelector(".status-text");
+const errorBar = document.getElementById("error-bar");
+const transcriptEl = document.getElementById("transcript-final");
+
+const recapSummaryEl = document.getElementById("recap-summary");
+const recapPhrasesWrap = document.getElementById("recap-phrases");
+const recapPhrasesList = document.getElementById("recap-phrases-list");
+const restartBtn = document.getElementById("restart-btn");
+const homeBtn = document.getElementById("home-btn");
+
+// --- Modal control ---
+function openMicModal() {
+    micModal.style.display = "flex";
+    micModal.setAttribute("aria-hidden", "false");
+}
+
+function closeMicModal() {
+    micModal.style.display = "none";
+    micModal.setAttribute("aria-hidden", "true");
+}
+
+micModal.querySelectorAll("[data-close-modal]").forEach((el) => {
+    el.addEventListener("click", closeMicModal);
+});
+
+document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && micModal.style.display !== "none") {
+        closeMicModal();
+    }
+});
 
 // --- Microphone selection ---
 async function loadMicrophoneOptions() {
@@ -63,7 +95,7 @@ async function loadMicrophoneOptions() {
     try {
         permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     } catch (e) {
-        showError("Mic permission denied. Please allow microphone access, then refresh mics.");
+        showError("Mic permission denied. Please allow microphone access, then refresh devices.");
         return;
     } finally {
         if (permissionStream) {
@@ -128,10 +160,21 @@ async function startSession() {
         return;
     }
 
-    startScreen.style.display = "none";
-    sessionScreen.style.display = "block";
+    closeMicModal();
+    homeScreen.style.display = "none";
+    recapScreen.style.display = "none";
+    sessionScreen.style.display = "flex";
     isSessionActive = true;
 
+    sessionMetrics = {
+        startedAt: Date.now(),
+        turns: 0,
+        suggestionsUsed: 0,
+        hesitations: 0,
+    };
+    transcriptEl.innerHTML = "";
+
+    setStatus("listening", "Listening");
     connectWebSocket();
 }
 
@@ -164,24 +207,20 @@ function connectWebSocket() {
         const msg = JSON.parse(event.data);
 
         if (msg.type === "session_ready") {
-            statusIndicator.textContent = "Listening...";
+            setStatus("listening", "Listening");
             startAudioStreaming("speakerA");
             startAudioStreaming("speakerB");
 
         } else if (msg.type === "thinking") {
-            statusIndicator.textContent = "Thinking...";
-            statusIndicator.className = "processing";
+            setStatus("thinking", "Thinking");
 
         } else if (msg.type === "idle") {
-            statusIndicator.textContent = "Listening...";
-            statusIndicator.className = "";
+            setStatus("listening", "Listening");
 
         } else if (msg.type === "phrases") {
+            sessionMetrics.hesitations += 1;
             appendHesitationBlock(msg.phrases);
-            showPhrases(msg.phrases);
-
-        } else if (msg.type === "log") {
-            appendLog(msg);
+            setStatus("listening", "Listening");
 
         } else if (msg.type === "recap") {
             showRecap(msg.recap, msg.phrases_used);
@@ -215,6 +254,13 @@ function sendMessage(msg) {
     if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(msg));
     }
+}
+
+// --- Status pill ---
+function setStatus(kind, text) {
+    statusIndicator.classList.remove("status-listening", "status-thinking", "status-ended");
+    statusIndicator.classList.add(`status-${kind}`);
+    statusText.textContent = text;
 }
 
 // --- Audio streaming (PCM16 via AudioContext -> backend -> AssemblyAI) ---
@@ -265,123 +311,111 @@ function stopAudioPipeline(sourceId) {
     }
 }
 
-// --- Phrase display ---
-function showPhraseEmptyState() {
-    phraseContainer.innerHTML = '<span class="phrase-empty">No active suggestions.</span>';
-}
-
-function showPhrases(phrases) {
-    phraseContainer.innerHTML = "";
-    statusIndicator.textContent = "Listening...";
-    statusIndicator.className = "";
-
-    phrases.forEach((phrase) => {
-        const card = document.createElement("div");
-        card.className = "phrase-card";
-        card.textContent = phrase;
-        card.dataset.phrase = phrase;
-        card.onclick = () => selectPhrase(phrase);
-        phraseContainer.appendChild(card);
-    });
-
-    appendPhraseHistory(phrases);
-}
-
+// --- Phrase matching ---
 function selectPhrase(phrase) {
-    selectedPhraseEl.textContent = phrase;
-    selectedPhraseEl.style.display = "block";
     sendMessage({ type: "phrase_selected", phrase });
-    selectedPhrases.add(phrase);
-    markPhraseUsedInHistory(phrase);
-    markActivePhraseSelected(phrase);
-
-    setTimeout(() => {
-        selectedPhraseEl.style.display = "none";
-    }, 4000);
 }
 
-// --- Phrase history ---
-function appendPhraseHistory(phrases) {
-    const empty = phraseHistoryEl.querySelector(".phrase-history-empty");
-    if (empty) empty.remove();
-
-    const now = new Date();
-    const time = now.toTimeString().slice(0, 8);
-
-    const group = document.createElement("div");
-    group.className = "phrase-history-group";
-
-    const timeEl = document.createElement("div");
-    timeEl.className = "phrase-history-time";
-    timeEl.textContent = time;
-    group.appendChild(timeEl);
-
-    phrases.forEach((phrase) => {
-        const item = document.createElement("div");
-        item.className = "phrase-history-item";
-        if (selectedPhrases.has(phrase)) item.classList.add("used");
-        item.textContent = phrase;
-        item.dataset.phrase = phrase;
-        group.appendChild(item);
-    });
-
-    phraseHistoryEl.appendChild(group);
-    updatePhraseHistoryVisibility();
-    phraseHistoryEl.scrollTop = phraseHistoryEl.scrollHeight;
+function normalizePhrase(text) {
+    return text
+        .toLowerCase()
+        .replace(/[^\w\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 }
 
-function updatePhraseHistoryVisibility() {
-    const isExpanded = phraseHistoryToggleBtn.getAttribute("aria-expanded") === "true";
-    phraseHistoryEl.classList.toggle("expanded", isExpanded);
-    const groups = phraseHistoryEl.querySelectorAll(".phrase-history-group");
-    groups.forEach((group, index) => {
-        group.hidden = !isExpanded && index < groups.length - 1;
+function findMatchingActivePhrase(text) {
+    if (!activeSuggestionGroup || activeSuggestionGroup.selected) return null;
+
+    const normalizedText = normalizePhrase(text);
+    if (!normalizedText) return null;
+
+    return activeSuggestionGroup.phrases.find((phrase) => {
+        const normalizedPhrase = normalizePhrase(phrase);
+        if (!normalizedPhrase) return false;
+        const phraseWords = normalizedPhrase.split(" ");
+        const textWords = normalizedText.split(" ");
+        const enoughPhraseSpoken = textWords.length >= Math.ceil(phraseWords.length * 0.7);
+
+        return normalizedText === normalizedPhrase ||
+            normalizedText.includes(normalizedPhrase) ||
+            (enoughPhraseSpoken && normalizedPhrase.includes(normalizedText));
     });
 }
 
-function togglePhraseHistory() {
-    const isExpanded = phraseHistoryToggleBtn.getAttribute("aria-expanded") === "true";
-    phraseHistoryToggleBtn.setAttribute("aria-expanded", String(!isExpanded));
-    phraseHistoryToggleIcon.textContent = isExpanded ? "Show All" : "Show Latest";
-    updatePhraseHistoryVisibility();
-    phraseHistoryEl.scrollTop = phraseHistoryEl.scrollHeight;
-}
+function markSuggestionGroupSelected(phrase, group = activeSuggestionGroup) {
+    if (!group || group.selected) return false;
 
-function markPhraseUsedInHistory(phrase) {
-    phraseHistoryEl.querySelectorAll(".phrase-history-item").forEach((el) => {
-        if (el.dataset.phrase === phrase) el.classList.add("used");
+    group.selected = true;
+    sessionMetrics.suggestionsUsed += 1;
+    selectPhrase(phrase);
+    group.cards.querySelectorAll(".chat-phrase-card").forEach((card) => {
+        card.classList.add("dismissed");
     });
-}
 
-function markActivePhraseSelected(phrase) {
-    phraseContainer.querySelectorAll(".phrase-card").forEach((el) => {
-        el.classList.toggle("selected", el.dataset.phrase === phrase);
-    });
+    const block = group.block;
+    if (block) {
+        const head = block.querySelector(".hesitation-head");
+        if (head) {
+            const titleSub = head.querySelector(".hesitation-title-sub");
+            if (titleSub) titleSub.textContent = "Selected";
+        }
+    }
+    return true;
 }
 
 // --- Recap ---
-function showRecap(recap, phrasesUsed) {
+function showRecap(recapText, phrasesUsed) {
     isSessionActive = false;
+    setStatus("ended", "Ended");
 
-    statusIndicator.textContent = "Ended";
-    statusIndicator.className = "";
-    showPhraseEmptyState();
+    const elapsedSec = sessionMetrics.startedAt
+        ? Math.floor((Date.now() - sessionMetrics.startedAt) / 1000)
+        : 0;
 
-    let html = `<p>${recap}</p>`;
-    if (phrasesUsed && phrasesUsed.length > 0) {
-        html += "<h4>Phrases you used:</h4><ul>";
-        phrasesUsed.forEach((p) => { html += `<li>${p}</li>`; });
-        html += "</ul>";
+    document.getElementById("stat-turns").textContent = String(sessionMetrics.turns);
+    document.getElementById("stat-suggestions").textContent = String(sessionMetrics.suggestionsUsed);
+    document.getElementById("stat-hesitations").textContent = String(sessionMetrics.hesitations);
+    setRecapDuration(elapsedSec);
+
+    if (recapText) {
+        recapSummaryEl.textContent = recapText;
+    } else {
+        recapSummaryEl.textContent = "";
     }
-    html += '<button id="restart-btn">New Session</button>';
-    inlineRecapEl.innerHTML = html;
-    inlineRecapEl.style.display = "block";
-    document.getElementById("restart-btn").onclick = () => location.reload();
 
-    const endBtn = document.getElementById("end-btn");
-    if (endBtn) endBtn.disabled = true;
+    if (phrasesUsed && phrasesUsed.length > 0) {
+        recapPhrasesList.innerHTML = "";
+        phrasesUsed.forEach((p) => {
+            const li = document.createElement("li");
+            li.textContent = p;
+            recapPhrasesList.appendChild(li);
+        });
+        recapPhrasesWrap.style.display = "block";
+    } else {
+        recapPhrasesWrap.style.display = "none";
+    }
+
+    sessionScreen.style.display = "none";
+    homeScreen.style.display = "none";
+    recapScreen.style.display = "flex";
 
     cleanup();
+}
+
+function formatDuration(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function setRecapDuration(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = String(totalSeconds % 60).padStart(2, "0");
+    const el = document.getElementById("recap-duration");
+    if (el) {
+        el.innerHTML = `${m}<span class="colon"> : </span>${s}`;
+    }
 }
 
 // --- End session ---
@@ -389,7 +423,7 @@ document.getElementById("end-btn").onclick = () => {
     sendMessage({ type: "end_session" });
 };
 
-// --- Transcript display (chat bubble layout: Speaker A right, Speaker B left) ---
+// --- Transcript display (chat bubble layout) ---
 function appendTranscriptLine(text) {
     const match = text.match(/^\[(.+?)\]:\s*(.+)$/);
     const wrapper = document.createElement("div");
@@ -398,132 +432,161 @@ function appendTranscriptLine(text) {
         const speakerLabel = match[1];
         const messageText = match[2];
         const isUserSpeaker = speakerLabel === "Speaker A";
+
         wrapper.className = `chat-message ${isUserSpeaker ? "speaker-a" : "speaker-b"}`;
 
-        const label = document.createElement("div");
-        label.className = "chat-speaker-label";
-        label.textContent = speakerLabel;
+        const labelEl = document.createElement("div");
+        labelEl.className = "chat-speaker-label";
+        labelEl.textContent = speakerLabel;
+
+        const row = document.createElement("div");
+        row.className = "chat-message-row";
+
+        const avatar = document.createElement("div");
+        avatar.className = `chat-avatar ${isUserSpeaker ? "avatar-a-chat" : "avatar-b-chat"}`;
+        avatar.textContent = isUserSpeaker ? "A" : "B";
 
         const bubble = document.createElement("div");
         bubble.className = "chat-bubble";
         bubble.textContent = messageText;
 
-        wrapper.appendChild(label);
-        wrapper.appendChild(bubble);
+        row.appendChild(avatar);
+        row.appendChild(bubble);
+
+        wrapper.appendChild(labelEl);
+        wrapper.appendChild(row);
+
+        sessionMetrics.turns += 1;
+
+        if (isUserSpeaker) {
+            const matchedPhrase = findMatchingActivePhrase(messageText);
+            if (matchedPhrase) {
+                markSuggestionGroupSelected(matchedPhrase);
+                bubble.classList.add("phrase-selected");
+                const tag = document.createElement("div");
+                tag.className = "copilot-tag";
+                tag.textContent = "Copilot";
+                bubble.parentElement.parentElement.insertBefore(tag, bubble.parentElement);
+            }
+        }
     } else {
         wrapper.className = "chat-message";
         wrapper.textContent = text;
     }
 
     transcriptEl.appendChild(wrapper);
-    const parent = document.getElementById("live-transcript");
-    parent.scrollTop = parent.scrollHeight;
+    scrollTranscriptToEnd();
 }
 
 function appendHesitationBlock(phrases) {
     const block = document.createElement("div");
     block.className = "hesitation-block";
 
-    const notice = document.createElement("div");
-    notice.className = "hesitation-notice";
-    notice.textContent = "Hesitation detected";
-    block.appendChild(notice);
+    const head = document.createElement("div");
+    head.className = "hesitation-head";
+
+    const title = document.createElement("div");
+    title.className = "hesitation-title";
+    title.innerHTML = `Hesitation detected <span class="hesitation-title-sub">· Suggested responses</span>`;
+
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "hesitation-close";
+    closeBtn.type = "button";
+    closeBtn.setAttribute("aria-label", "Dismiss suggestions");
+    closeBtn.textContent = "×";
+    closeBtn.onclick = () => {
+        block.style.display = "none";
+        if (activeSuggestionGroup && activeSuggestionGroup.block === block) {
+            activeSuggestionGroup.selected = true;
+        }
+    };
+
+    head.appendChild(title);
+    head.appendChild(closeBtn);
 
     const cards = document.createElement("div");
     cards.className = "chat-phrase-cards";
-    phrases.forEach((phrase) => {
-        const card = document.createElement("div");
+
+    const suggestionGroup = { phrases, cards, block, selected: false };
+
+    phrases.forEach((phrase, index) => {
+        const card = document.createElement("button");
+        card.type = "button";
         card.className = "chat-phrase-card";
-        card.textContent = phrase;
         card.dataset.phrase = phrase;
+
+        const num = document.createElement("span");
+        num.className = "phrase-num";
+        num.textContent = String(index + 1).padStart(2, "0");
+
+        const textSpan = document.createElement("span");
+        textSpan.className = "phrase-text";
+        textSpan.textContent = phrase;
+
+        const arrow = document.createElement("span");
+        arrow.className = "phrase-arrow";
+        arrow.textContent = "→";
+
+        card.appendChild(num);
+        card.appendChild(textSpan);
+        card.appendChild(arrow);
+
         card.onclick = () => {
-            selectPhrase(phrase);
-            cards.querySelectorAll(".chat-phrase-card").forEach((c) => {
-                c.classList.add("dismissed");
-            });
-            appendSelectedPhraseAsChatBubble(phrase);
+            if (markSuggestionGroupSelected(phrase, suggestionGroup)) {
+                appendSelectedPhraseAsChatBubble(phrase);
+            }
         };
         cards.appendChild(card);
     });
+
+    block.appendChild(head);
     block.appendChild(cards);
+    activeSuggestionGroup = suggestionGroup;
 
     transcriptEl.appendChild(block);
-    const parent = document.getElementById("live-transcript");
-    parent.scrollTop = parent.scrollHeight;
+    scrollTranscriptToEnd();
 }
 
 function appendSelectedPhraseAsChatBubble(phrase) {
     const wrapper = document.createElement("div");
     wrapper.className = "chat-message speaker-a";
 
-    const label = document.createElement("div");
-    label.className = "chat-speaker-label";
-    label.textContent = "Speaker A";
+    const labelEl = document.createElement("div");
+    labelEl.className = "chat-speaker-label";
+    labelEl.textContent = "Speaker A";
+
+    const row = document.createElement("div");
+    row.className = "chat-message-row";
+
+    const avatar = document.createElement("div");
+    avatar.className = "chat-avatar avatar-a-chat";
+    avatar.textContent = "A";
+
+    const bubbleWrap = document.createElement("div");
+
+    const tag = document.createElement("div");
+    tag.className = "copilot-tag";
+    tag.textContent = "Copilot";
 
     const bubble = document.createElement("div");
     bubble.className = "chat-bubble phrase-selected";
     bubble.textContent = phrase;
 
-    wrapper.appendChild(label);
-    wrapper.appendChild(bubble);
-    transcriptEl.appendChild(wrapper);
+    bubbleWrap.appendChild(tag);
+    bubbleWrap.appendChild(bubble);
 
+    row.appendChild(avatar);
+    row.appendChild(bubbleWrap);
+
+    wrapper.appendChild(labelEl);
+    wrapper.appendChild(row);
+    transcriptEl.appendChild(wrapper);
+    scrollTranscriptToEnd();
+}
+
+function scrollTranscriptToEnd() {
     const parent = document.getElementById("live-transcript");
     parent.scrollTop = parent.scrollHeight;
-}
-
-// --- Pipeline log ---
-function togglePipelineLog() {
-    const isExpanded = logToggleBtn.getAttribute("aria-expanded") === "true";
-    logToggleBtn.setAttribute("aria-expanded", String(!isExpanded));
-    logPanelEl.hidden = isExpanded;
-    logToggleIcon.textContent = isExpanded ? "Show" : "Hide";
-    if (!isExpanded) {
-        logPanelEl.scrollTop = logPanelEl.scrollHeight;
-    }
-}
-
-function appendLog(msg) {
-    const entry = document.createElement("div");
-    entry.className = "log-entry";
-
-    const now = new Date();
-    const time = now.toTimeString().slice(0, 8);
-    const stage = msg.stage || "event";
-    const status = msg.status || "";
-    const detail = msg.detail || "";
-
-    const header = document.createElement("div");
-    header.className = "log-header";
-    header.innerHTML =
-        `<span class="log-time">${time}</span>` +
-        `<span class="log-stage ${stage}">[${stage}]</span>` +
-        `<span class="log-status">${status}</span>` +
-        `<span class="log-detail"></span>`;
-    header.querySelector(".log-detail").textContent = detail;
-    entry.appendChild(header);
-
-    const addBlock = (label, value) => {
-        if (value === undefined || value === null || value === "") return;
-        const block = document.createElement("div");
-        block.className = "log-block";
-        const lab = document.createElement("span");
-        lab.className = "log-label";
-        lab.textContent = label + ": ";
-        const body = document.createElement("span");
-        body.className = "log-body";
-        body.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
-        block.appendChild(lab);
-        block.appendChild(body);
-        entry.appendChild(block);
-    };
-
-    addBlock("prompt", msg.prompt);
-    addBlock("output", msg.output);
-    addBlock("parsed", msg.phrases);
-
-    logPanelEl.appendChild(entry);
-    logPanelEl.scrollTop = logPanelEl.scrollHeight;
 }
 
 // --- Error ---
@@ -537,8 +600,7 @@ function hideError() {
 
 function stopSessionAfterFatalError(message) {
     isSessionActive = false;
-    statusIndicator.textContent = "Error";
-    statusIndicator.className = "";
+    setStatus("ended", "Error");
     showError(message);
     cleanup();
 }
@@ -559,8 +621,18 @@ function cleanup() {
 }
 
 // --- Init ---
-startBtn.onclick = () => startSession();
+startBtn.onclick = () => openMicModal();
+configureMicsBtn.onclick = () => openMicModal();
+modalStartBtn.onclick = () => startSession();
 refreshMicsBtn.onclick = () => loadMicrophoneOptions();
-phraseHistoryToggleBtn.onclick = () => togglePhraseHistory();
-logToggleBtn.onclick = () => togglePipelineLog();
+restartBtn.onclick = () => {
+    recapScreen.style.display = "none";
+    homeScreen.style.display = "flex";
+    openMicModal();
+};
+homeBtn.onclick = () => {
+    recapScreen.style.display = "none";
+    homeScreen.style.display = "flex";
+};
+
 loadMicrophoneOptions();
