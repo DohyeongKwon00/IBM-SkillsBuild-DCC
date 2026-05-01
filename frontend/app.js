@@ -621,7 +621,7 @@ function cleanup() {
 }
 
 // --- Init ---
-startBtn.onclick = () => openMicModal();
+startBtn.onclick = () => startSession();
 configureMicsBtn.onclick = () => openMicModal();
 modalStartBtn.onclick = () => startSession();
 refreshMicsBtn.onclick = () => loadMicrophoneOptions();
